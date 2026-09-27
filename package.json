@@ -7,6 +7,7 @@
     "build": "node build.js",
     "start": "node build.js && node serve.js",
     "pretest": "node build.js",
+    "screenshots": "node build.js && node scripts/screenshots.js",
     "test": "node test/graph.test.js && node test/core.test.js && node test/bridge.test.js && node test/providers.test.js && node test/local.test.js && node test/smoke.test.js"
   },
   "devDependencies": {

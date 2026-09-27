@@ -392,7 +392,8 @@ button, input, textarea { font: inherit; color: inherit; }
 .project-dir.is-up { color: var(--muted); font-family: var(--sans); }
 .project-empty { padding: 6px 8px; color: var(--muted); font-size: 0.875rem; }
 
-.context { margin-top: 32px; }
+.context { margin-top: 32px; border-radius: 10px; }
+.context.is-dropping { background: var(--wash); box-shadow: 0 0 0 10px var(--wash); outline: 2px dashed var(--focus); outline-offset: 10px; }
 .context-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
 .context-count { margin: 0 0 8px; color: var(--muted); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
 .context-count.is-over { color: var(--danger); font-weight: 600; }

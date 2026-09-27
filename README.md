@@ -4,9 +4,11 @@ Decide how to implement a feature in an existing software project by putting it 
 
 Each role can run on a different provider and model: Claude inside claude.ai, and Claude Code, OpenRouter, Hermes Agent or any OpenAI-compatible endpoint when you run Quorum yourself. Run on your own computer, Quorum attaches to a project folder, and seats on Claude Code work inside it, exploring the code before they propose, review or plan.
 
+![Quorum in session: the seating chart on the left shows who is working, and the builders' proposals stream in side by side](docs/screenshots/proposals.png)
+
 ## How a session works
 
-You choose the project folder, when Quorum runs on your computer, and describe the feature. Then paste in whatever context the council should work from, as plain text: product requirements, how the system works today, constraints, relevant code or anything else. Each piece gets a name, and every agent sees all of it. The agents are told to use names that appear in the context, or that they found in the project's code, and to state assumptions rather than invent file names, endpoints or libraries. Context is limited to 24,000 characters so that every request, which carries the context along with the proposals and reviews, stays a manageable size.
+You choose the project folder, when Quorum runs on your computer, and describe the feature. Then paste in whatever context the council should work from, as plain text: product requirements, how the system works today, constraints, relevant code or anything else. You can also drop text files onto the context, or add them with "From files…", and each comes in named after its file. Each piece gets a name, and every agent sees all of it. The agents are told to use names that appear in the context, or that they found in the project's code, and to state assumptions rather than invent file names, endpoints or libraries. Context is limited to 24,000 characters so that every request, which carries the context along with the proposals and reviews, stays a manageable size.
 
 1. **Proposals.** Three builders write in parallel, each with a different approach: the Pragmatist looks for the smallest change that fits the existing code, the Visionary for a better design than the obvious one, and the Architect for something that fits the system's structure and holds up as it grows.
 2. **Council review.** The Advocate (users and requirements), the Skeptic (regressions, security, performance and hidden complexity) and the Strategist (effort, risk and sequencing) each review all three proposals without knowing who wrote them, each reading them in a different order. Every review ends with a ranked ballot and a score from 1 to 10 for each proposal.
@@ -22,6 +24,30 @@ Each round makes seven requests, or ten with the final review, which runs again 
 Served by `npm start`, Quorum saves every session in a SQLite database, `~/.quorum/quorum.db`, or the file `QUORUM_DB` names. A session is saved when the council convenes, and each step's result is saved the moment the step finishes, in every round. The page's address names the open session, so reloading it opens the session again, and the Saved sessions list at the top of the page opens any session, or deletes it.
 
 If you close the page or stop the server in the middle of a session, open it again: the finished steps come back, the steps that were running show as stopped, and Resume runs only those. Saving sessions needs Node.js 22.13 or later, for its built-in SQLite; on older versions everything else works but sessions aren't saved. Opened as a file or inside claude.ai, Quorum doesn't save sessions, but revision rounds still work while the page is open.
+
+## What a session looks like
+
+These screenshots follow the "CSV export for reports" example on the page, with the default OpenRouter setup. They were recorded by `npm run screenshots`, which plays a scripted session through the real page, so the agents' words were written for the demo rather than by the models named on them, and the session timer is moved forward the way minutes would pass in a real session.
+
+**Putting a feature before the council.** The feature, and the context the council works from.
+
+![The feature request and two pieces of context filled in from the CSV export example](docs/screenshots/convene.png)
+
+**Council review.** Each councilor reviews the proposals blind, through their own lens, and ends with a ranked ballot. The seating chart shows each councilor's first choice.
+
+![The Skeptic's review, ranking Proposal A first, while the Chair waits to write the plan](docs/screenshots/council.png)
+
+**The vote.** The ballots are counted. Here A and B tie on points, and B wins on first-place votes.
+
+![The vote table: B and A tie at 7 points, and B is adopted on first-place votes](docs/screenshots/vote.png)
+
+**The plan.** The Chair writes the implementation plan from the winner, folds in ideas from the other proposals, and answers the councilor who ranked the winner last.
+
+![The Chair's implementation plan, built on Proposal B](docs/screenshots/plan.png)
+
+The page follows your system's light or dark setting.
+
+![The vote in dark mode](docs/screenshots/vote-dark.png)
 
 ## Agents and providers
 
@@ -109,6 +135,8 @@ Build `dist/quorum.html` and ask Claude to publish that file as an artifact with
 | `sessions.js` | The database of saved sessions: each session, and the handoff each step made in each round |
 | `dist/quorum.html` | The built single-file page |
 | `test/` | Unit tests for `core.js` and `bridge.js`; in-page tests that stand in a simulated Claude and simulated OpenRouter, Hermes Agent and custom endpoints; and in-page tests against the real local server and database, with `test/fake-claude.js` standing in for Claude Code |
+| `scripts/screenshots.js` | Records the screenshots in `docs/screenshots/` by driving the built page in Chromium with a scripted OpenRouter |
+| `scripts/scripted-session.js` | What each seat answers in that scripted session |
 
 ### The session graph
 
@@ -131,6 +159,8 @@ A session with the final review runs `REVIEWED`, the same graph with the last th
 
 If a step fails, nothing that needs it starts. A retry runs the graph again from the handoffs already made, so only the unfinished steps are asked again. Saved sessions work the same way: the database holds each round's handoffs, and a reopened session runs the graph on from them.
 
+The same holds across a reload. The page keeps the brief and what each agent wrote in the browser, and rebuilds the handoffs from them by running each step's `result` again, so a saved answer is checked the same way a fresh one is. A step whose answer no longer reads, and every step after it, simply runs again when the session is resumed.
+
 ## Build and test
 
 Requires Node.js 18 or later, and 22.13 or later to save sessions.
@@ -140,4 +170,11 @@ npm install
 npm start       # builds, then serves the page at http://localhost:8765
 npm run build   # writes dist/quorum.html only
 npm test        # rebuilds, then runs the unit, bridge and in-page tests
+```
+
+To record the screenshots again after changing the page, install Playwright and Chromium, which aren't among the project's dependencies, then run the script:
+
+```sh
+npm install --no-save playwright && npx playwright install chromium
+npm run screenshots
 ```

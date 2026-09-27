@@ -136,6 +136,7 @@
   const els = {
     feature: $("feature"), featureNote: $("featureNote"), convene: $("convene"), resume: $("resume"),
     exampleNote: $("exampleNote"), undoExample: $("undoExample"), contextCount: $("contextCount"), contextNote: $("contextNote"),
+    context: $("context"), addFiles: $("addFiles"), fileInput: $("fileInput"),
     motionContext: $("motionContext"), motionContextSummary: $("motionContextSummary"), motionContextBody: $("motionContextBody"),
     settingsHint: $("settingsHint"), tierNote: $("tierNote"), agentsNote: $("agentsNote"), roster: $("roster"),
     providers: $("providers"), providersStatus: $("providersStatus"), providersIntro: $("providersIntro"), helpHermes: $("help-hermes"),
@@ -458,6 +459,7 @@
     S.sel = { proposals: "A", questions: "A", council: "advocate", review: "scaling" };
     S.clock = { startedAt: 0, accumulated: 0 };
     S.convenedAt = Date.now();
+    saveSession();
     startClock();
     render();
     scrollToSection(els.secProposals);
@@ -479,6 +481,7 @@
         saveHandoff(S.round, h);
         if (S.seats[h.from]) S.seats[h.from].status = "done";
         if (h.kind === "tally") S.revealed.vote = true;
+        saveSession();
         schedule();
       },
     });
@@ -489,7 +492,7 @@
     if (failed.length) return settle(failed);
     S.phase = "done";
     pauseClock();
-    saveState();
+    saveSession();
     schedule();
   }
 
@@ -605,7 +608,7 @@
     S.notice = { text: (info.kind === "fatal" ? "" : names + " couldn't finish. ") + errText(worst, example), retry: info.kind === "retry" };
     S.canRetry = info.kind === "retry";
     pauseClock();
-    saveState();
+    saveSession();
     schedule();
   }
 
@@ -631,7 +634,7 @@
     S.notice = null;
     S.stoppedAt = Date.now();
     pauseClock();
-    saveState();
+    saveSession();
     const hadFocus = document.activeElement === els.convene || document.activeElement === els.railStop;
     render();
     if (hadFocus && !els.resume.hidden) els.resume.focus();
@@ -664,7 +667,7 @@
     S.phase = "running";
     S.convenedAt = Date.now();
     startClock();
-    saveState();
+    saveSession();
     const hadFocus = document.activeElement === els.resume || document.activeElement === els.noticeRetry;
     render();
     if (hadFocus) els.convene.focus();
@@ -686,8 +689,82 @@
     S.notice = { text: "Something went wrong on this page. Retry to continue where the council left off.", retry: true };
     S.canRetry = true;
     pauseClock();
-    saveState();
+    saveSession();
     schedule();
+  }
+
+  /* ---------- Keeping the session ---------- */
+
+  // The last session is kept in this browser, so a reload brings it back and an unfinished one can be resumed. Only
+  // the brief and what each agent wrote are kept. The handoffs are rebuilt from those by the same steps that made
+  // them, so an answer that comes back is checked the way a fresh one is, and a step whose answer no longer reads
+  // simply runs again.
+  const SESSION_KEY = "quorum:session";
+
+  function saveSession() {
+    const b = handedOff("brief");
+    if (!b) return;
+    const seats = {};
+    ALL_IDS.forEach(id => {
+      const d = handedOff(id);
+      if (d) seats[id] = { text: d.text, truncated: d.truncated, agent: d.agent, served: d.served };
+    });
+    store.set(SESSION_KEY, JSON.stringify({ v: 1, brief: b, agents: S.agents, elapsed: elapsed(), seats }));
+  }
+
+  function agentFrom(a) {
+    return a && typeof a === "object" && PROVIDERS[a.provider] && typeof a.model === "string" ? { provider: a.provider, model: a.model } : null;
+  }
+
+  function restoreSession() {
+    let saved = null;
+    try { saved = JSON.parse(store.get(SESSION_KEY) || "null"); } catch (_) { saved = null; }
+    const b = saved && saved.v === 1 && saved.brief;
+    if (!b || typeof b.feature !== "string" || !b.feature.trim()) return false;
+    const seats = saved.seats && typeof saved.seats === "object" ? saved.seats : {};
+    const handoffs = {
+      brief: Graph.handoff("brief", "brief", {
+        feature: b.feature,
+        context: (Array.isArray(b.context) ? b.context : [])
+          .filter(c => c && typeof c.text === "string")
+          .map(c => ({ title: typeof c.title === "string" ? c.title : "", text: c.text })),
+        length: LENGTHS[b.length] ? b.length : "standard",
+      }),
+    };
+    // A step comes back only if everything it needs came back too.
+    Core.SESSION.order.forEach(id => {
+      const node = Core.SESSION.nodes[id], step = Core.STEPS[node.kind], s = seats[id];
+      if (handoffs[id] || !step || !node.needs.every(d => handoffs[d])) return;
+      const inputs = {};
+      node.needs.forEach(d => { inputs[d] = handoffs[d]; });
+      const task = { node: id, kind: node.kind, inputs };
+      try {
+        if (step.compute) {
+          handoffs[id] = Graph.handoff(id, node.kind, step.compute(task));
+        } else if (s && typeof s.text === "string" && s.text.trim()) {
+          handoffs[id] = Graph.handoff(id, node.kind, Object.assign(step.result(task, s.text), {
+            truncated: !!s.truncated,
+            agent: agentFrom(s.agent),
+            served: typeof s.served === "string" ? s.served : "",
+          }));
+        }
+      } catch (_) { /* this step runs again on resume */ }
+    });
+    S.handoffs = handoffs;
+    S.session += 1;
+    S.agents = Core.normalizeAgents(saved.agents, INSIDE);
+    resetSeats();
+    ALL_IDS.forEach(id => {
+      const d = handedOff(id);
+      if (d) Object.assign(S.seats[id], { status: "done", text: d.text, truncated: d.truncated, agent: d.agent, served: d.served });
+    });
+    // Seats that hadn't finished when the page closed read as stopped, so Resume asks them again.
+    Graph.ready(Core.SESSION, handoffs).forEach(id => { if (S.seats[id]) S.seats[id].status = "stopped"; });
+    S.phase = handoffs.chair ? "done" : "stopped";
+    S.revealed = { proposals: true, council: LETTERS.every(L => handoffs[L]), vote: !!handoffs.tally, plan: !!handoffs.tally };
+    const ms = Number(saved.elapsed);
+    S.clock = { startedAt: 0, accumulated: Number.isFinite(ms) && ms > 0 ? ms : 0 };
+    return true;
   }
 
   // When the viewer's plan lacks a chosen tier, the platform answers with a cheaper one. Say so.
@@ -1907,6 +1984,56 @@
     if (!over && !els.contextNote.hidden) showContextNote("");
   }
 
+  // Text files come in as context named after the file, so the agents can refer to them by that name.
+  const FILE_LIMIT = 200000;
+  const PROSE_FILE = /\.(md|markdown|txt|rst|adoc)$/i;
+
+  function readFile(file) {
+    if (typeof file.text === "function") return file.text();
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(r.error);
+      r.readAsText(file);
+    });
+  }
+
+  async function addFiles(list) {
+    const files = Array.prototype.slice.call(list || []);
+    if (!files.length || S.phase === "running") return;
+    dropUndo();
+    const skipped = [];
+    let first = null;
+    for (const file of files) {
+      let text = null;
+      if (file.size <= FILE_LIMIT) {
+        try { text = await readFile(file); } catch (_) { text = null; }
+      }
+      if (S.phase === "running") break;
+      if (text == null || text.indexOf("\u0000") >= 0) {
+        skipped.push(file.name);
+        continue;
+      }
+      const item = addContext(PROSE_FILE.test(file.name) ? "other" : "code", file.name.slice(0, 60), text.replace(/\r\n?/g, "\n"));
+      if (!first) first = item;
+    }
+    saveContext();
+    renderContextCounts();
+    if (first) first.textEl.focus();
+    const notes = [];
+    if (skipped.length) notes.push("Skipped " + Core.listAnd(skipped) + ", because only text files up to 200 KB can be added.");
+    const total = contextTotal();
+    if (first && total > CONTEXT_LIMIT) {
+      notes.push("The context is now " + fmtNum(total) + " characters, more than the " + fmtNum(CONTEXT_LIMIT) +
+        " the council can read at once. Trim it to the parts that matter before you convene.");
+    }
+    showContextNote(notes.join(" "));
+  }
+
+  function carriesFiles(e) {
+    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") >= 0);
+  }
+
   let contextTimer = 0;
   function saveContext() {
     store.set("quorum:context", JSON.stringify(ctxItems.map(it => ({ kind: it.kind, title: it.title, text: it.text }))));
@@ -2387,7 +2514,7 @@
     setForm(snap);
     els.feature.focus();
   });
-  addBtns.forEach(btn => {
+  addBtns.filter(btn => btn.hasAttribute("data-kind")).forEach(btn => {
     btn.addEventListener("click", () => {
       if (S.phase === "running") return;
       dropUndo();
@@ -2395,6 +2522,36 @@
       saveContext();
     });
   });
+  els.addFiles.addEventListener("click", () => {
+    if (S.phase !== "running") els.fileInput.click();
+  });
+  els.fileInput.addEventListener("change", () => {
+    const files = Array.prototype.slice.call(els.fileInput.files || []);
+    els.fileInput.value = "";
+    addFiles(files);
+  });
+  els.context.addEventListener("dragover", e => {
+    if (!carriesFiles(e) || S.phase === "running") return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    els.context.classList.add("is-dropping");
+  });
+  els.context.addEventListener("dragleave", e => {
+    if (!els.context.contains(e.relatedTarget)) els.context.classList.remove("is-dropping");
+  });
+  els.context.addEventListener("drop", e => {
+    els.context.classList.remove("is-dropping");
+    if (!carriesFiles(e)) return;
+    e.preventDefault();
+    addFiles(e.dataTransfer.files);
+  });
+  // A file dropped anywhere else would replace the page with the file, and the session with it.
+  window.addEventListener("dragover", e => {
+    if (!carriesFiles(e) || e.defaultPrevented) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "none";
+  });
+  window.addEventListener("drop", e => { if (carriesFiles(e)) e.preventDefault(); });
   exampleBtns.forEach(btn => {
     btn.addEventListener("click", e => {
       e.preventDefault();
@@ -2627,6 +2784,7 @@
   els.questionsOn.checked = store.get("quorum:questions") !== "off";
   const savedLength = store.get("quorum:length");
   if (savedLength && LENGTHS[savedLength]) lengthInputs.forEach(i => { i.checked = i.value === savedLength; });
+  restoreSession();
   autosize();
   render();
 })(Core, Graph);

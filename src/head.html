@@ -241,6 +241,8 @@ button, input, textarea { font: inherit; color: inherit; }
   min-height: 44px;
 }
 .clock { margin: 0; font-size: 0.875rem; color: var(--chamber-muted); font-variant-numeric: tabular-nums; }
+.save-state { margin: 2px 0 0; font-size: 0.8125rem; color: var(--chamber-muted); }
+.save-state.is-error { color: var(--chamber-danger); }
 .btn-rail {
   background: transparent;
   color: var(--chamber-ink);
@@ -318,6 +320,78 @@ button, input, textarea { font: inherit; color: inherit; }
 }
 
 /* ---------- Context ---------- */
+/* ---------- Saved sessions ---------- */
+.sessions { margin: 0 0 28px; }
+.session-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.session-list:empty { display: none; }
+.session-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+.session-item:hover { background: var(--wash); }
+.session-item[aria-current="true"] { background: var(--wash); box-shadow: inset 3px 0 0 var(--primary); }
+.session-open {
+  grid-column: 1;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.session-open:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
+.session-open:disabled { cursor: default; }
+.session-meta { grid-column: 1; margin: 0; color: var(--muted); font-size: 0.8125rem; }
+.session-delete { grid-column: 2; grid-row: 1 / span 2; font-size: 0.8125rem; }
+.session-delete.is-confirm { color: var(--danger); }
+.session-empty { margin: 0; color: var(--muted); font-size: 0.875rem; }
+
+/* ---------- Project folder ---------- */
+.project { margin: 0 0 28px; }
+.project-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.project-path {
+  flex: 1 1 280px;
+  min-width: 0;
+  min-height: 38px;
+  padding: 7px 10px;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  font: 400 0.875rem/1.3 var(--mono);
+}
+.project-path::placeholder { color: var(--muted); opacity: 1; }
+.project-path[readonly] { color: var(--muted); }
+.project-path[aria-invalid="true"] { border-color: var(--danger); }
+.project-status { margin: 8px 0 0; max-width: 72ch; color: var(--muted); font-size: 0.875rem; }
+.project-status strong { color: var(--ink); font-weight: 600; }
+.project-status.is-error { color: var(--danger); font-weight: 500; }
+.project-browser { margin-top: 10px; border: 1px solid var(--rule); border-radius: 8px; background: var(--paper); }
+.project-where { margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--rule); color: var(--muted); font: 400 0.8125rem/1.4 var(--mono); overflow-wrap: anywhere; }
+.project-dirs { list-style: none; margin: 0; padding: 4px; max-height: 264px; overflow-y: auto; }
+.project-dir {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  text-align: left;
+  font: 400 0.875rem/1.4 var(--mono);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.project-dir:hover:not(:disabled) { background: var(--wash); }
+.project-dir:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.project-dir:disabled { cursor: not-allowed; opacity: 0.6; }
+.project-dir.is-up { color: var(--muted); font-family: var(--sans); }
+.project-empty { padding: 6px 8px; color: var(--muted); font-size: 0.875rem; }
+
 .context { margin-top: 32px; }
 .context-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
 .context-count { margin: 0 0 8px; color: var(--muted); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
@@ -484,6 +558,7 @@ button, input, textarea { font: inherit; color: inherit; }
 .providers-status { color: var(--muted); font-size: 0.875rem; }
 .providers-body { display: grid; gap: 4px; padding: 0 16px 18px; }
 .providers-intro { margin: 0 0 6px; max-width: 70ch; color: var(--muted); font-size: 0.9375rem; }
+.providers-intro.is-error { color: var(--danger); }
 .provider { min-width: 0; margin: 0; padding: 14px 0 0; border: 0; border-top: 1px solid var(--rule); }
 .provider legend { float: left; width: 100%; margin: 0 0 10px; padding: 0; font-weight: 600; font-size: 0.9375rem; }
 .provider-fields { clear: both; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 14px; }
@@ -519,6 +594,50 @@ button, input, textarea { font: inherit; color: inherit; }
 .roster-list p { margin: 0; max-width: 60ch; }
 .roster-list .badge { margin-top: 1px; }
 .roster-foot { margin: 16px 0 0; color: var(--muted); font-size: 0.875rem; max-width: 62ch; }
+.roster-foot code { font: 0.8125rem var(--mono); }
+.roster-optional { display: block; color: var(--muted); font-size: 0.8125rem; font-weight: 400; }
+.review-toggle { margin-top: 6px; }
+.plan-draft { margin: 20px 0 0; }
+.qa { display: grid; gap: 22px; }
+.qa-block .doc { margin-top: 6px; }
+.qa-who { margin: 0; font-size: 0.875rem; font-weight: 600; color: var(--muted); }
+.qa-block.is-answer { padding-top: 18px; border-top: 1px solid var(--rule); }
+.qa-none { margin: 6px 0 0; color: var(--muted); }
+
+/* ---------- Revisions ---------- */
+.revise { margin-top: 36px; padding-top: 24px; border-top: 1px solid var(--rule); max-width: 72ch; }
+.revise-help { margin: 0 0 12px; color: var(--muted); font-size: 0.9375rem; }
+.revise-input {
+  display: block;
+  width: 100%;
+  min-height: 104px;
+  resize: vertical;
+  padding: 12px 14px;
+  background: var(--wash);
+  color: var(--ink);
+  border: 0;
+  border-bottom: 2px solid var(--ink);
+  border-radius: 8px 8px 0 0;
+  font: 400 1rem/1.5 var(--sans);
+}
+.revise-input::placeholder { color: var(--muted); opacity: 1; }
+.revise-input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.revise-actions { display: flex; gap: 10px; margin-top: 12px; }
+.rounds { display: grid; gap: 10px; }
+.round { border: 1px solid var(--rule); border-radius: 8px; background: var(--paper); }
+.round > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  padding: 12px 16px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.round-meta { color: var(--muted); font-size: 0.875rem; font-weight: 400; }
+.round-body { padding: 0 16px 16px; }
+.round-body .motion-quote { margin: 0; font-size: 1rem; }
+.round-label { margin: 20px 0 6px; color: var(--muted); font-size: 0.875rem; font-weight: 600; }
 
 .badge {
   display: inline-grid;
@@ -552,6 +671,10 @@ button, input, textarea { font: inherit; color: inherit; }
 .sec-note { margin: 0 0 0 auto; color: var(--muted); font-size: 0.875rem; }
 .sec-intro { margin: 0 0 20px; color: var(--muted); max-width: 64ch; }
 .motion-intro { margin: 0 0 6px; color: var(--muted); font-size: 0.875rem; }
+.motion-project { margin: -16px 0 28px; color: var(--muted); font-size: 0.875rem; overflow-wrap: anywhere; }
+.motion-project code { color: var(--ink); font: 0.8125rem var(--mono); }
+.motion-round { margin: -12px 0 28px; }
+.motion-round .motion-quote { margin-bottom: 0; border-left-color: var(--neutral); font-size: 1rem; }
 .motion-context { margin: -12px 0 28px; max-width: 68ch; }
 .motion-context summary { cursor: pointer; color: var(--muted); font-size: 0.875rem; }
 .motion-context summary:hover { color: var(--ink); }
@@ -577,6 +700,7 @@ button, input, textarea { font: inherit; color: inherit; }
 
 /* ---------- Tabs and panes ---------- */
 .tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.tabs.is-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .tab {
   position: relative;
   display: flex;

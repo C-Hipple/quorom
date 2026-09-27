@@ -70,12 +70,15 @@
       <p class="status" id="status" role="status" aria-live="polite"></p>
       <ol class="stages" aria-label="Stages of the session">
         <li><button type="button" class="stage-btn" data-stage="proposals" data-target="sec-proposals" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">1</span>Proposals</span><span class="stage-state">Waiting</span></button></li>
+        <li id="stageQuestions" hidden><button type="button" class="stage-btn" data-stage="questions" data-target="sec-questions" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">2</span>Questions</span><span class="stage-state">Waiting</span></button></li>
         <li><button type="button" class="stage-btn" data-stage="council" data-target="sec-council" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">2</span>Council review</span><span class="stage-state">Waiting</span></button></li>
         <li><button type="button" class="stage-btn" data-stage="vote" data-target="sec-vote" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">3</span>The vote</span><span class="stage-state">Waiting</span></button></li>
+        <li id="stageReview" hidden><button type="button" class="stage-btn" data-stage="review" data-target="sec-review" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">4</span>Final review</span><span class="stage-state">Waiting</span></button></li>
         <li><button type="button" class="stage-btn" data-stage="plan" data-target="sec-plan" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">4</span>Final plan</span><span class="stage-state">Waiting</span></button></li>
       </ol>
       <div class="rail-foot">
         <p class="clock" id="clock"></p>
+        <p class="save-state" id="saveState" role="status" hidden></p>
         <button type="button" class="btn btn-rail" id="railStop" hidden>Stop</button>
       </div>
     </div>
@@ -85,6 +88,25 @@
     <section class="motion" aria-labelledby="motion-title">
       <h1 class="motion-title" id="motion-title">Put a feature before the council</h1>
       <p class="lede">Describe a feature for an existing software project, then paste in whatever the council should work from, like product requirements, how the system works today, constraints or relevant code. Three builders propose implementations, the council votes, and the Chair writes the implementation plan.</p>
+      <details class="providers sessions" id="sessions" hidden>
+        <summary><span class="providers-title">Saved sessions</span><span class="providers-status" id="sessionsStatus"></span></summary>
+        <div class="providers-body">
+          <p class="providers-intro" id="sessionsIntro"></p>
+          <ul class="session-list" id="sessionList"></ul>
+        </div>
+      </details>
+      <div class="project" id="project" hidden>
+        <label class="field-label" for="projectPath">Project folder</label>
+        <div class="project-row">
+          <input class="project-path" id="projectPath" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="~/code/your-app" aria-describedby="projectStatus">
+          <button type="button" class="btn btn-quiet btn-small" id="projectBrowse" aria-expanded="false" aria-controls="projectBrowser">Browse</button>
+        </div>
+        <p class="project-status" id="projectStatus" role="status"></p>
+        <div class="project-browser" id="projectBrowser" hidden>
+          <p class="project-where" id="projectWhere"></p>
+          <ul class="project-dirs" id="projectDirs" aria-label="Folders"></ul>
+        </div>
+      </div>
       <label class="field-label" for="feature">The feature</label>
       <textarea id="feature" class="feature" rows="3" maxlength="4000" placeholder="Let workspace owners invite teammates by email and choose whether each one can view or edit…" aria-describedby="featureNote"></textarea>
       <p class="field-note" id="featureNote" hidden></p>
@@ -117,6 +139,7 @@
               <label class="visually-hidden" for="provider-builders">Provider for the builders</label>
               <select class="agent-provider" id="provider-builders" data-role="builders">
                 <option value="claude">Claude</option>
+                <option value="claude-code">Claude Code</option>
                 <option value="openrouter">OpenRouter</option>
                 <option value="hermes">Hermes Agent</option>
                 <option value="custom">Other endpoint</option>
@@ -137,6 +160,7 @@
               <label class="visually-hidden" for="provider-council">Provider for the council</label>
               <select class="agent-provider" id="provider-council" data-role="council">
                 <option value="claude">Claude</option>
+                <option value="claude-code">Claude Code</option>
                 <option value="openrouter">OpenRouter</option>
                 <option value="hermes">Hermes Agent</option>
                 <option value="custom">Other endpoint</option>
@@ -157,6 +181,7 @@
               <label class="visually-hidden" for="provider-chair">Provider for the Chair</label>
               <select class="agent-provider" id="provider-chair" data-role="chair">
                 <option value="claude">Claude</option>
+                <option value="claude-code">Claude Code</option>
                 <option value="openrouter">OpenRouter</option>
                 <option value="hermes">Hermes Agent</option>
                 <option value="custom">Other endpoint</option>
@@ -169,6 +194,29 @@
               </select>
               <label class="visually-hidden" for="model-chair">Model for the Chair</label>
               <input class="agent-model" id="model-chair" data-role="chair" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+            </div>
+          </div>
+          <label class="check review-toggle"><input type="checkbox" id="questionsOn" checked> Questions: before the vote, the council questions each proposal on edge cases, missing requirements and technical debt, and its builder answers and adjusts it</label>
+          <label class="check review-toggle"><input type="checkbox" id="reviewOn"> Final review: have the plan checked for scaling and security, and revised, before it's final</label>
+          <div class="agent-row" id="row-review" hidden>
+            <span class="setting-label" aria-hidden="true">Review</span>
+            <div class="agent-controls">
+              <label class="visually-hidden" for="provider-review">Provider for the final review</label>
+              <select class="agent-provider" id="provider-review" data-role="review">
+                <option value="claude">Claude</option>
+                <option value="claude-code">Claude Code</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="hermes">Hermes Agent</option>
+                <option value="custom">Other endpoint</option>
+              </select>
+              <label class="visually-hidden" for="tier-review">Claude model for the final review</label>
+              <select class="agent-tier" id="tier-review" data-role="review">
+                <option value="quick">Fast</option>
+                <option value="default">Balanced</option>
+                <option value="complex">Frontier</option>
+              </select>
+              <label class="visually-hidden" for="model-review">Model for the final review</label>
+              <input class="agent-model" id="model-review" data-role="review" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
             </div>
           </div>
           <fieldset class="setting is-length">
@@ -194,6 +242,11 @@
         <summary><span class="providers-title">Providers</span><span class="providers-status" id="providersStatus"></span></summary>
         <div class="providers-body">
           <p class="providers-intro" id="providersIntro"></p>
+          <fieldset class="provider" id="set-claude-code">
+            <legend>Claude Code</legend>
+            <p class="provider-status" id="status-claude-code"></p>
+            <p class="provider-help">Seats on Claude Code run inside the project folder, signed in as you are in Claude Code, and read the project's CLAUDE.md. They can read and search the project's files, and can't change them, run commands, reach outside the folder or use your MCP servers.</p>
+          </fieldset>
           <fieldset class="provider" id="set-openrouter">
             <legend>OpenRouter</legend>
             <div class="provider-fields">
@@ -230,6 +283,7 @@
           </fieldset>
         </div>
       </details>
+      <datalist id="models-claude-code"></datalist>
       <datalist id="models-openrouter"></datalist>
       <datalist id="models-hermes"></datalist>
       <datalist id="models-custom"></datalist>
@@ -259,7 +313,14 @@
           <li><span class="badge is-chair" aria-hidden="true"></span><p><strong>The Chair</strong> counts the ranked ballots and writes the implementation plan from the winning proposal, borrowing the best of the rest.</p></li>
         </ul>
       </div>
-      <p class="roster-foot">A session makes seven requests: three proposals, three reviews and the plan. Each role runs on the agent you choose, so the builders can draft on a fast, cheap model while the council and the Chair decide on a frontier one. Inside claude.ai the agents run on Claude; opened on its own, Quorum can use OpenRouter, Hermes Agent or another OpenAI-compatible service.</p>
+      <div class="roster-row">
+        <h3 class="roster-label">Final review <span class="roster-optional">if you ask for it</span></h3>
+        <ul class="roster-list">
+          <li><span class="badge is-ring" aria-hidden="true"></span><p><strong>The Scaling Reviewer</strong> checks how the plan holds up as usage grows: load, data volume, queries, queues and cost.</p></li>
+          <li><span class="badge is-ring" aria-hidden="true"></span><p><strong>The Security Reviewer</strong> checks the plan for security and privacy: access, data exposure, injection, secrets and abuse. The Chair then revises the plan to address both reviews.</p></li>
+        </ul>
+      </div>
+      <p class="roster-foot">A session makes seven requests: three proposals, three reviews and the plan. The council's questions add up to twelve more, three councilors questioning each proposal and each builder answering, and the final review three more. Each role runs on the agent you choose, so the builders can draft on a fast, cheap model while the council and the Chair decide on a frontier one. Inside claude.ai the agents run on Claude; opened on its own, Quorum can use OpenRouter, Hermes Agent or another OpenAI-compatible service, and run with <code>npm start</code>, it can use Claude Code working inside your project folder.</p>
     </section>
 
     <section class="stage-sec" id="sec-proposals" aria-labelledby="h-proposals" hidden>
@@ -269,6 +330,11 @@
       </div>
       <p class="motion-intro">The council is considering:</p>
       <blockquote class="motion-quote" id="motionQuote"></blockquote>
+      <p class="motion-project" id="motionProject" hidden></p>
+      <div class="motion-round" id="motionRound" hidden>
+        <p class="motion-intro" id="motionRoundIntro"></p>
+        <blockquote class="motion-quote" id="motionRoundQuote"></blockquote>
+      </div>
       <details class="motion-context" id="motionContext" hidden>
         <summary id="motionContextSummary"></summary>
         <div class="motion-context-body" id="motionContextBody"></div>
@@ -294,6 +360,38 @@
         <p class="byline"><span id="propByline"></span><span class="tier" id="propTier" hidden></span></p>
         <article class="doc" id="propDoc"></article>
         <p class="pane-note" id="propNote" hidden></p>
+        <details class="motion-context plan-draft" id="propDraft" hidden>
+          <summary>The proposal as first submitted</summary>
+          <article class="doc" id="propDraftDoc"></article>
+        </details>
+      </div>
+    </section>
+
+    <section class="stage-sec" id="sec-questions" aria-labelledby="h-questions" hidden>
+      <div class="sec-head">
+        <h2 class="sec-title" id="h-questions" tabindex="-1"><span class="sec-num">2</span>Questions</h2>
+        <p class="sec-note" id="questionsCount"></p>
+      </div>
+      <p class="sec-intro">As each proposal comes in, each councilor asks its builder about what it leaves open: edge cases, missing requirements and technical debt. The builder answers and adjusts the proposal, and the council votes once all three are settled.</p>
+      <div class="tabs" role="tablist" aria-label="Questions on each proposal" id="questionTabs">
+        <button type="button" role="tab" class="tab" id="qtab-A" data-key="A" data-letter="A" aria-controls="questionsPane" aria-selected="true">
+          <span class="tab-top"><span class="badge" aria-hidden="true">A</span><span class="tab-role">Proposal A</span></span>
+          <span class="tab-title"></span>
+          <span class="tab-meta"></span>
+        </button>
+        <button type="button" role="tab" class="tab" id="qtab-B" data-key="B" data-letter="B" aria-controls="questionsPane" aria-selected="false" tabindex="-1">
+          <span class="tab-top"><span class="badge" aria-hidden="true">B</span><span class="tab-role">Proposal B</span></span>
+          <span class="tab-title"></span>
+          <span class="tab-meta"></span>
+        </button>
+        <button type="button" role="tab" class="tab" id="qtab-C" data-key="C" data-letter="C" aria-controls="questionsPane" aria-selected="false" tabindex="-1">
+          <span class="tab-top"><span class="badge" aria-hidden="true">C</span><span class="tab-role">Proposal C</span></span>
+          <span class="tab-title"></span>
+          <span class="tab-meta"></span>
+        </button>
+      </div>
+      <div class="pane" role="tabpanel" id="questionsPane" aria-labelledby="qtab-A" tabindex="0">
+        <div class="qa" id="questionsDoc"></div>
       </div>
     </section>
 
@@ -337,6 +435,31 @@
       <p class="verdict" id="verdict"></p>
     </section>
 
+    <section class="stage-sec" id="sec-review" aria-labelledby="h-review" hidden>
+      <div class="sec-head">
+        <h2 class="sec-title" id="h-review" tabindex="-1"><span class="sec-num">4</span>Final review</h2>
+        <p class="sec-note" id="reviewCount"></p>
+      </div>
+      <p class="sec-intro">Before the plan is final, one reviewer checks how it holds up as usage grows and another checks its security and privacy. The Chair then revises the plan to address what they find.</p>
+      <div class="tabs is-two" role="tablist" aria-label="Final reviews" id="reviewTabs">
+        <button type="button" role="tab" class="tab" id="tab-scaling" data-key="scaling" aria-controls="reviewPane" aria-selected="true">
+          <span class="tab-top"><span class="dot" aria-hidden="true"></span><span class="tab-role">Scaling</span></span>
+          <span class="tab-title"></span>
+          <span class="tab-meta"></span>
+        </button>
+        <button type="button" role="tab" class="tab" id="tab-security" data-key="security" aria-controls="reviewPane" aria-selected="false" tabindex="-1">
+          <span class="tab-top"><span class="dot" aria-hidden="true"></span><span class="tab-role">Security</span></span>
+          <span class="tab-title"></span>
+          <span class="tab-meta"></span>
+        </button>
+      </div>
+      <div class="pane" role="tabpanel" id="reviewPane" aria-labelledby="tab-scaling" tabindex="0">
+        <p class="byline"><span id="reviewByline"></span><span class="tier" id="reviewTier" hidden></span></p>
+        <article class="doc" id="reviewDoc"></article>
+        <p class="pane-note" id="reviewNote" hidden></p>
+      </div>
+    </section>
+
     <section class="stage-sec" id="sec-plan" aria-labelledby="h-plan" hidden>
       <div class="sec-head">
         <h2 class="sec-title" id="h-plan" tabindex="-1"><span class="sec-num">4</span>Final plan</h2>
@@ -345,12 +468,33 @@
         <p class="byline"><span id="planByline"></span><span class="tier" id="planTier" hidden></span></p>
         <article class="doc" id="planDoc"></article>
         <p class="pane-note" id="planNote" hidden></p>
+        <details class="motion-context plan-draft" id="planDraft" hidden>
+          <summary>The plan before the final review</summary>
+          <article class="doc" id="planDraftDoc"></article>
+        </details>
         <div class="plan-actions" id="planActions" hidden>
           <button type="button" class="btn btn-primary" id="copyPlan">Copy plan</button>
           <button type="button" class="btn btn-quiet" id="dlPlan" hidden>Download plan</button>
           <button type="button" class="btn btn-quiet" id="dlRecord" hidden>Download full record</button>
         </div>
       </div>
+      <div class="revise" id="revise" hidden>
+        <label class="field-label" for="reviseInput">Questions and input on this plan</label>
+        <p class="revise-help" id="reviseHelp">Ask about anything in the plan, or add what the council should know. The builders revise their proposals with your input, the council votes again, and the Chair answers you in a revised plan.</p>
+        <textarea class="revise-input" id="reviseInput" rows="4" placeholder="Why a new table rather than the existing audit log? Exports also have to respect each user's permissions." aria-describedby="reviseHelp reviseNote"></textarea>
+        <p class="field-note" id="reviseNote" hidden></p>
+        <div class="revise-actions">
+          <button type="button" class="btn btn-primary" id="reviseBtn">Send back to the council</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="stage-sec" id="sec-rounds" aria-labelledby="h-rounds" hidden>
+      <div class="sec-head">
+        <h2 class="sec-title" id="h-rounds" tabindex="-1">Earlier rounds</h2>
+      </div>
+      <p class="sec-intro">The plan from each earlier round, and the input you gave on it.</p>
+      <div class="rounds" id="roundsList"></div>
     </section>
   </main>
 </div>

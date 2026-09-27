@@ -88,6 +88,7 @@ function makeHarness(opts = {}) {
     pretendToBeVisual: true,
     beforeParse(w) {
       w.__QUORUM_TEST__ = true;
+      if (!opts.questions && w.localStorage) w.localStorage.setItem("quorum:questions", "off");
       Object.keys(opts.storage || {}).forEach(k => w.localStorage.setItem(k, opts.storage[k]));
       w.fetch = fetchMock;
       w.TextDecoder = TextDecoder;
@@ -136,6 +137,10 @@ const chats = h => h.requests.filter(r => r.method === "POST");
     const claudeOpt = doc.querySelector('#provider-builders option[value="claude"]');
     assert.ok(claudeOpt.disabled);
     assert.strictEqual(claudeOpt.textContent, "Claude (inside claude.ai only)");
+    const codeOpt = doc.querySelector('#provider-builders option[value="claude-code"]');
+    assert.ok(codeOpt.disabled, "Claude Code needs Quorum's local server");
+    assert.strictEqual(codeOpt.textContent, "Claude Code (needs npm start)");
+    assert.ok(doc.getElementById("project").hidden, "no project folder without the local server");
     assert.ok(doc.getElementById("providers").open, "providers panel opens until something is set up");
     assert.strictEqual(txt(doc.getElementById("providersStatus")), "OpenRouter needs setting up");
     assert.ok(txt(doc.getElementById("help-hermes")).includes("API_SERVER_CORS_ORIGINS=https://example.org"));

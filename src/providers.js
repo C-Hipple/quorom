@@ -12,6 +12,22 @@ const Providers = (function (Core) {
     return key ? { Authorization: "Bearer " + key } : {};
   }
 
+  // Feeds a streamed response body to an SSE parser until finished() says so or the stream ends.
+  async function readStream(res, parser, finished) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (!finished()) {
+        const step = await reader.read();
+        if (step.done) break;
+        parser.feed(decoder.decode(step.value, { stream: true }));
+      }
+      if (!finished()) parser.end();
+    } finally {
+      try { reader.cancel().catch(() => {}); } catch (_) { /* already closed */ }
+    }
+  }
+
   // One streamed chat completion from an OpenAI-compatible endpoint.
   async function streamChat(req) {
     const signal = req.signal;
@@ -67,21 +83,12 @@ const Providers = (function (Core) {
         }
         onData(ev.data);
       });
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
       try {
-        while (!done) {
-          const step = await reader.read();
-          if (step.done) break;
-          parser.feed(decoder.decode(step.value, { stream: true }));
-        }
-        if (!done) parser.end();
+        await readStream(res, parser, () => done);
       } catch (e) {
         const text = Core.stripThinking(raw);
         if (signal && signal.aborted) throw { code: "cancelled", message: "Stopped.", text };
         throw { code: "upstream_error", message: String((e && e.message) || e), text };
-      } finally {
-        try { reader.cancel().catch(() => {}); } catch (_) { /* already closed */ }
       }
     }
 
@@ -92,14 +99,68 @@ const Providers = (function (Core) {
     return { text, truncated: finish === "length", served };
   }
 
+  // One seat on Claude Code, which Quorum's local server (serve.js) runs inside the project folder. The server
+  // streams events: start {model}, turn {} when a new message begins, text {delta}, tool {tool, detail},
+  // and finally done {text, truncated, model} or error {code, message}.
+  async function claudeCode(req) {
+    const signal = req.signal;
+    let res;
+    try {
+      res = await fetch(req.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: req.prompt, model: req.model || "", cwd: req.cwd }),
+        signal,
+      });
+    } catch (e) {
+      if (signal && signal.aborted) throw { code: "cancelled", message: "Stopped." };
+      throw { code: "unreachable", message: String((e && e.message) || e) };
+    }
+    if (!res.ok) {
+      let body = "", code = "";
+      try { body = await res.text(); } catch (_) { /* no body */ }
+      try { code = JSON.parse(body).error.code; } catch (_) { /* not the server's own error */ }
+      const detail = Core.errorMessageFrom(body);
+      throw { code: typeof code === "string" && code ? code : Core.httpErrorCode(res.status, detail), message: detail, status: res.status };
+    }
+
+    let text = "", served = req.model, final = null, failure = null;
+    const parser = Core.createSSEParser(ev => {
+      if (final || failure) return;
+      let d;
+      try { d = JSON.parse(ev.data); } catch (_) { return; }
+      if (!d || typeof d !== "object") return;
+      if (ev.event === "start" && typeof d.model === "string" && d.model) served = d.model;
+      else if (ev.event === "turn") text = "";
+      else if (ev.event === "text" && typeof d.delta === "string") {
+        text += d.delta;
+        if (text.trim() && req.onText) req.onText(text);
+      } else if (ev.event === "tool" && req.onActivity) req.onActivity("tool", ev.data);
+      else if (ev.event === "done") final = d;
+      else if (ev.event === "error") failure = d;
+    });
+    try {
+      await readStream(res, parser, () => !!(final || failure));
+    } catch (e) {
+      if (signal && signal.aborted) throw { code: "cancelled", message: "Stopped.", text };
+      throw { code: "upstream_error", message: String((e && e.message) || e), text };
+    }
+    if (failure) throw { code: typeof failure.code === "string" ? failure.code : "upstream_error", message: String(failure.message || ""), text };
+    if (!final) throw { code: "upstream_error", message: "Claude Code stopped before it finished.", text };
+    const out = String(final.text || text).replace(/\s+$/, "");
+    if (!out.trim()) throw { code: "empty_completion", message: "The answer was empty." };
+    return { text: out, truncated: !!final.truncated, served: final.model || served };
+  }
+
   function openRouterHeaders() {
     const h = { "X-Title": "Quorum" };
     if (typeof location !== "undefined" && /^https?:$/.test(location.protocol)) h["HTTP-Referer"] = location.origin;
     return h;
   }
 
-  // run(agent, prompt, { config, sample, signal, onText, onActivity })
-  //   config: { keys: {openrouter, hermes, custom}, urls: {hermes, custom} }
+  // run(agent, prompt, { config, sample, cwd, signal, onText, onActivity })
+  //   config: { keys: {openrouter, hermes, custom}, urls: {hermes, custom}, local }, where local is the address of
+  //   Quorum's local server; cwd is the project folder for agents that run inside it
   async function run(agent, prompt, o) {
     const cfg = o.config || { keys: {}, urls: {} };
     switch (agent.provider) {
@@ -113,6 +174,13 @@ const Providers = (function (Core) {
         });
         return { text: String(res.text || ""), truncated: !!res.truncated, served: res.modelTierApplied || agent.model };
       }
+      case "claude-code":
+        if (!cfg.local) throw { code: "unreachable", message: "Quorum's local server isn't running." };
+        if (!o.cwd) throw { code: "project_missing", message: "No project folder." };
+        return claudeCode({
+          url: joinUrl(cfg.local, "api/claude-code"), model: agent.model, prompt, cwd: o.cwd,
+          signal: o.signal, onText: o.onText, onActivity: o.onActivity,
+        });
       case "openrouter":
         if (!cfg.keys.openrouter) throw { code: "missing_key", message: "No OpenRouter API key." };
         return streamChat({

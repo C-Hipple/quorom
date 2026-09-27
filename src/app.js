@@ -5,14 +5,31 @@
   const TIERS = Core.TIERS, ROLES = Core.ROLES, LENGTHS = Core.LENGTHS, PROVIDERS = Core.PROVIDERS;
   // Inside claude.ai the page gets the Claude runtime but can't reach other services; on its own it's the reverse.
   const INSIDE = !!(window.claude && typeof window.claude.use === "function");
+  // Served by Quorum's local server (serve.js), the page can also choose a project folder and run Claude Code in it.
+  const ON_WEB = !INSIDE && /^https?:$/.test(location.protocol);
   const COUNCIL_IDS = COUNCIL.map(c => c.id);
-  const ALL_IDS = LETTERS.concat(COUNCIL_IDS, ["chair"]);
+  const REVIEWERS = Core.REVIEWERS, REVIEWER_IDS = Core.REVIEWER_IDS;
+  // The seats in the chamber's seating chart, and every step an agent works on. The Chair's seat also shows its
+  // revision after the final review, the "final" step.
+  // A councilor's questions and a builder's answers show on their seats too.
+  const ASK_IDS = Core.ASK_IDS, AMEND_IDS = Core.AMEND_IDS, askId = Core.askId, amendId = Core.amendId;
+  const SEAT_IDS = LETTERS.concat(COUNCIL_IDS, ["chair"]);
+  const ALL_IDS = SEAT_IDS.concat(ASK_IDS, AMEND_IDS, REVIEWER_IDS, ["final"]);
   const CAST = {};
-  BUILDERS.forEach(b => { CAST[b.id] = b; });
-  COUNCIL.forEach(c => { CAST[c.id] = c; });
-  CAST.chair = CHAIR;
+  ALL_IDS.forEach(id => { CAST[id] = Core.stepOf(id).cast; });
   const isBuilder = id => LETTERS.indexOf(id) >= 0;
   const isCouncil = id => COUNCIL_IDS.indexOf(id) >= 0;
+  const isReviewer = id => REVIEWER_IDS.indexOf(id) >= 0;
+  const isAsk = id => ASK_IDS.indexOf(id) >= 0;
+  const isAmend = id => AMEND_IDS.indexOf(id) >= 0;
+
+  // A step's name where the page says it couldn't finish.
+  function stepName(id) {
+    const st = Core.stepOf(id);
+    if (isAsk(id)) return st.cast.name + "'s questions on Proposal " + st.letter;
+    if (isAmend(id)) return st.cast.name + "'s answers to the council";
+    return st.cast.name;
+  }
 
   const EXAMPLES = [
     {
@@ -73,8 +90,16 @@
     not_found: { kind: "retry", msg: "{provider} answered \u201Cnot found\u201D. Check the address under Providers, which usually ends in /v1, and the model name, then retry.", short: "{provider} answered \u201Cnot found\u201D." },
     unreachable: { kind: "retry", msg: "Couldn't reach {provider}. {hint}", short: "Couldn't reach {provider}." },
     bad_request: { kind: "retry", msg: "{provider} rejected the request{detail}. Check the model and provider settings, then retry.", short: "{provider} rejected the request." },
+    project_missing: { kind: "retry", msg: "Claude Code couldn't open the project folder. Check that it's still there, then retry.", short: "Claude Code couldn't open the project folder." },
+    claude_code_missing: { kind: "retry", msg: "Quorum's server couldn't find Claude Code. Install it, or restart the server with QUORUM_CLAUDE_BIN set to its path, then retry.", short: "Quorum's server couldn't find Claude Code." },
   };
   const errInfo = code => ERRORS[code] || ERRORS.upstream_error;
+  // Where a provider needs other advice than the general message.
+  const PROVIDER_ERRORS = {
+    "claude-code": {
+      auth_failed: { msg: "Claude Code isn't signed in. Run claude in a terminal and sign in, then retry.", short: "Claude Code isn't signed in." },
+    },
+  };
 
   function pageOrigin() {
     return /^https?:$/.test(location.protocol) ? location.origin : "";
@@ -86,13 +111,14 @@
       return "Check that hermes gateway is running" + (origin ? " and that API_SERVER_CORS_ORIGINS includes " + origin : ", and open Quorum from a local web server so Hermes can allow it") + ", then retry.";
     }
     if (provider === "custom") return "Check the address, and that the service accepts requests from this page, then retry.";
+    if (provider === "claude-code") return "Check that Quorum's server, which npm start runs, is still running, then retry.";
     return "Check your internet connection, then retry.";
   }
 
   // An error's message, with the provider of the seat that failed filled in.
   function errText(code, seat, field) {
-    const info = errInfo(code);
     const agent = seat && seat.agent;
+    const info = (agent && PROVIDER_ERRORS[agent.provider] && PROVIDER_ERRORS[agent.provider][code]) || errInfo(code);
     const provider = agent ? PROVIDERS[agent.provider].label : "Claude";
     const detail = seat && seat.error && seat.error.message ? ": " + String(seat.error.message).slice(0, 160).replace(/[.\s]+$/, "") : "";
     return info[field || "msg"]
@@ -123,6 +149,18 @@
     plan: $("plan"), planByline: $("planByline"), planDoc: $("planDoc"), planNote: $("planNote"),
     planActions: $("planActions"), copyPlan: $("copyPlan"), dlPlan: $("dlPlan"), dlRecord: $("dlRecord"),
     notice: $("notice"), noticeText: $("noticeText"), noticeRetry: $("noticeRetry"), noticeDismiss: $("noticeDismiss"),
+    project: $("project"), projectPath: $("projectPath"), projectBrowse: $("projectBrowse"), projectStatus: $("projectStatus"),
+    projectBrowser: $("projectBrowser"), projectWhere: $("projectWhere"), projectDirs: $("projectDirs"), motionProject: $("motionProject"),
+    statusClaudeCode: $("status-claude-code"),
+    sessions: $("sessions"), sessionsStatus: $("sessionsStatus"), sessionsIntro: $("sessionsIntro"), sessionList: $("sessionList"),
+    saveState: $("saveState"), motionRound: $("motionRound"), motionRoundIntro: $("motionRoundIntro"), motionRoundQuote: $("motionRoundQuote"),
+    revise: $("revise"), reviseInput: $("reviseInput"), reviseNote: $("reviseNote"), reviseBtn: $("reviseBtn"),
+    secRounds: $("sec-rounds"), roundsList: $("roundsList"),
+    reviewOn: $("reviewOn"), rowReview: $("row-review"), stageReview: $("stageReview"), questionsOn: $("questionsOn"), stageQuestions: $("stageQuestions"),
+    secQuestions: $("sec-questions"), questionsCount: $("questionsCount"), questionsPane: $("questionsPane"), questionsDoc: $("questionsDoc"),
+    propDraft: $("propDraft"), propDraftDoc: $("propDraftDoc"),
+    secReview: $("sec-review"), reviewCount: $("reviewCount"), reviewPane: $("reviewPane"), reviewByline: $("reviewByline"),
+    reviewTier: $("reviewTier"), reviewDoc: $("reviewDoc"), reviewNote: $("reviewNote"), planDraft: $("planDraft"), planDraftDoc: $("planDraftDoc"),
   };
   const providerSelects = {}, tierSelects = {}, modelFields = {};
   ROLES.forEach(r => {
@@ -142,7 +180,7 @@
   const addBtns = Array.prototype.slice.call(document.querySelectorAll(".add-btn"));
   const stageBtns = Array.prototype.slice.call(document.querySelectorAll(".stage-btn"));
   const seatEls = {};
-  ALL_IDS.forEach(id => { seatEls[id] = document.querySelector('[data-seat="' + id + '"]'); });
+  SEAT_IDS.forEach(id => { seatEls[id] = document.querySelector('[data-seat="' + id + '"]'); });
   const reduceMotion = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
 
   const store = {
@@ -157,11 +195,14 @@
     phase: "idle", // idle | running | paused | stopped | blocked | done
     token: 0,
     session: 0,
-    handoffs: {}, // node id to frozen handoff, for each step of the session that has finished
+    handoffs: {}, // node id to frozen handoff, for each step of this round that has finished
+    round: 1, // the round of the session: each round after the first revises the last plan with the requester's input
+    past: [], // the handoffs of each earlier round, oldest first
+    sessionId: null, // the id of the saved session, when Quorum's local server saves sessions
     agents: Core.normalizeAgents(null, INSIDE),
     seats: {},
-    revealed: { proposals: false, council: false, vote: false, plan: false },
-    sel: { proposals: "A", council: "advocate" },
+    revealed: { proposals: false, questions: false, council: false, vote: false, review: false, plan: false },
+    sel: { proposals: "A", questions: "A", council: "advocate", review: "scaling" },
     clock: { startedAt: 0, accumulated: 0 },
     notice: null,
     canRetry: false,
@@ -177,14 +218,14 @@
   let clockTimer = 0;
 
   function freshSeat() {
-    return { status: "idle", text: "", error: null, truncated: false, ctl: null, agent: null, served: "", activity: "" };
+    return { status: "idle", text: "", error: null, truncated: false, ctl: null, agent: null, served: "", activity: "", skipped: false };
   }
   function resetSeats() {
     ALL_IDS.forEach(id => { S.seats[id] = freshSeat(); });
   }
   resetSeats();
 
-  if (window.__QUORUM_TEST__) window.__quorum = { S };
+  if (window.__QUORUM_TEST__) window.__quorum = { S, saved: () => saved.queue };
 
   /* ---------- Capabilities ---------- */
 
@@ -205,6 +246,16 @@
     return sampleFn;
   });
 
+  // What Quorum's local server says: { claudeCode: { available, version }, project, home }, or null without one.
+  let local = null;
+  let localState = ON_WEB ? "pending" : "none"; // pending | ready | none
+  function localUrl(route) {
+    return location.origin + "/api/" + route;
+  }
+  const localReady = ON_WEB && typeof fetch === "function" ?
+    fetch(localUrl("local")).then(r => (r.ok ? r.json() : null)).then(o => (o && o.claudeCode ? o : null), () => null) :
+    Promise.resolve(null);
+
   useCapability("downloads").then(ns => {
     downloadsNS = ns && typeof ns.save === "function" ? ns : null;
     schedule();
@@ -221,16 +272,33 @@
     return a;
   }
 
-  function usesClaude(agents) {
-    return ROLES.some(r => agents[r.id].provider === "claude");
+  // The roles a session uses: the review role only with a final review.
+  function activeRoles(review) {
+    return ROLES.filter(r => !r.optional || review);
   }
 
-  const ROLE_WORDS = { builders: "the builders", council: "the council", chair: "the Chair" };
+  // Whether the session has a final review, and the council's questions: as chosen before it convenes, and as it
+  // was convened after.
+  function reviewing() {
+    return S.phase === "idle" ? els.reviewOn.checked : !!brief().review;
+  }
+  function questioning() {
+    return S.phase === "idle" ? els.questionsOn.checked : !!brief().questions;
+  }
 
-  // What stops these agents from running here, if anything: { message, focus, openProviders }.
-  function checkAgents(agents) {
-    for (let i = 0; i < ROLES.length; i++) {
-      const role = ROLES[i].id, a = agents[role], who = ROLE_WORDS[role];
+  function usesClaude(agents, review) {
+    return activeRoles(review).some(r => agents[r.id].provider === "claude");
+  }
+
+  const ROLE_WORDS = { builders: "the builders", council: "the council", chair: "the Chair", review: "the final review" };
+
+  // What stops these agents from running here, if anything: { message, focus, openProviders, project }, where project
+  // says the message belongs with the project folder. project is the folder the session works in, resuming says the
+  // session has already started, with or without one, and review says whether it has a final review.
+  function checkAgents(agents, project, resuming, review) {
+    const roles = activeRoles(review);
+    for (let i = 0; i < roles.length; i++) {
+      const role = roles[i].id, a = agents[role], who = ROLE_WORDS[role];
       if (a.provider === "claude") {
         if (!INSIDE) return { message: "Claude only works when Quorum is open inside claude.ai. Choose another provider for " + who + ".", focus: providerSelects[role] };
         if (sampleState === "blocked") return { message: errInfo(S.blockedCode).msg, focus: providerSelects[role] };
@@ -239,6 +307,16 @@
       }
       if (INSIDE) {
         return { message: PROVIDERS[a.provider].label + " only works when Quorum is open outside Claude, because pages published on Claude can't reach other services. Choose Claude for " + who + ", or open the downloaded file.", focus: providerSelects[role] };
+      }
+      if (a.provider === "claude-code") {
+        if (!local) return { message: "Claude Code runs through Quorum's local server. Start it with npm start and open Quorum at the address it prints, or choose another provider for " + who + ".", focus: providerSelects[role] };
+        if (!local.claudeCode.available) return { message: "Quorum's server couldn't find Claude Code. Install it, or restart the server with QUORUM_CLAUDE_BIN set to its path, or choose another provider for " + who + ".", focus: providerSelects[role], openProviders: true };
+        if (!project) {
+          return resuming ?
+            { message: "This session started without a project folder, so Claude Code can't join it. Choose another provider for " + who + ", or convene again.", focus: providerSelects[role] } :
+            { message: "Choose the project folder for Claude Code to work in.", focus: els.projectPath, project: true };
+        }
+        continue;
       }
       if (!a.model) return { message: "Enter a model for " + who + ".", focus: modelFields[role] };
       if (a.provider === "openrouter" && !creds.keys.openrouter) return { message: "Add your OpenRouter API key under Providers.", focus: credFields.keys.openrouter, openProviders: true };
@@ -254,7 +332,12 @@
   }
 
   function showAgentsProblem(problem) {
-    showAgentsNote(problem.message);
+    if (problem.project) {
+      proj.note = problem.message;
+      render();
+    } else {
+      showAgentsNote(problem.message);
+    }
     if (problem.openProviders) els.providers.open = true;
     if (problem.focus) problem.focus.focus();
   }
@@ -262,9 +345,14 @@
     const c = lengthInputs.filter(i => i.checked)[0];
     return c && LENGTHS[c.value] ? c.value : "standard";
   }
+  // The seat holding the current version of proposal L: its builder's adjustment, once that starts to arrive.
+  function proposalSeatId(L) {
+    const a = S.seats[amendId(L)];
+    return !a.skipped && (a.text || a.status === "done") ? amendId(L) : L;
+  }
   function proposalsMap() {
     const o = {};
-    LETTERS.forEach(L => { o[L] = S.seats[L].text; });
+    LETTERS.forEach(L => { o[L] = S.seats[proposalSeatId(L)].text; });
     return o;
   }
   function currentTitles() {
@@ -277,6 +365,10 @@
   }
   function brief() {
     return handedOff("brief") || NO_BRIEF;
+  }
+  // The plan the session ends with: the Chair's revision after a final review, or else its plan.
+  function planHandoff() {
+    return brief().review ? handedOff("final") : handedOff("chair");
   }
   function tally() {
     return handedOff("tally");
@@ -316,19 +408,35 @@
     }
     showContextNote("");
     const agents = currentAgents();
-    if (usesClaude(agents) && !sampleFn && sampleState === "pending") {
+    const review = els.reviewOn.checked;
+    if ((usesClaude(agents, review) && !sampleFn && sampleState === "pending") || localState === "pending") {
       S.connecting = true;
       render();
-      await sampleReady;
+      await Promise.all([usesClaude(agents, review) ? sampleReady : null, localReady]);
       S.connecting = false;
     }
-    const problem = checkAgents(agents);
+    // A path typed a moment ago may not have been looked up yet.
+    const typed = local ? els.projectPath.value.trim() : "";
+    if (local && (proj.value !== typed || proj.pending)) {
+      S.connecting = true;
+      render();
+      await (proj.value !== typed ? checkProject(typed) : proj.pending);
+      S.connecting = false;
+    }
+    if (typed && !proj.info) {
+      render();
+      showAgentsProblem({ message: proj.error || "There's no folder at " + typed + ".", focus: els.projectPath, project: true });
+      return;
+    }
+    const project = proj.info ? { path: proj.info.path, name: proj.info.name } : null;
+    const problem = checkAgents(agents, project, false, review);
     if (problem) {
       render();
       showAgentsProblem(problem);
       return;
     }
     showAgentsNote("");
+    proj.note = "";
 
     abortAll();
     S.token += 1;
@@ -336,53 +444,71 @@
     const tok = S.token;
     resetSeats();
     S.phase = "running";
-    S.handoffs = { brief: Graph.handoff("brief", "brief", { feature, context: contextForSession(), length: currentLength() }) };
+    S.handoffs = {
+      brief: Graph.handoff("brief", "brief", { feature, context: contextForSession(), length: currentLength(), project, questions: els.questionsOn.checked, review }),
+      revision: Graph.handoff("revision", "revision", null),
+    };
+    S.round = 1;
+    S.past = [];
     dropUndo();
     S.agents = agents;
     S.notice = null;
     S.canRetry = false;
-    S.revealed = { proposals: true, council: false, vote: false, plan: false };
-    S.sel = { proposals: "A", council: "advocate" };
+    S.revealed = { proposals: true, questions: false, council: false, vote: false, review: false, plan: false };
+    S.sel = { proposals: "A", questions: "A", council: "advocate", review: "scaling" };
     S.clock = { startedAt: 0, accumulated: 0 };
     S.convenedAt = Date.now();
     startClock();
     render();
     scrollToSection(els.secProposals);
+    await startSaving();
+    if (tok !== S.token) return;
     run(tok).catch(onRunCrash);
   }
 
   // Runs the session graph on from the handoffs already made, so a retry or resume redoes only what's missing.
   async function run(tok) {
-    const res = await Graph.run(Core.SESSION, {
+    const graph = Core.graphFor(brief());
+    const res = await Graph.run(graph, {
       done: S.handoffs,
       work: task => work(task, tok),
       live: () => tok === S.token,
       onHandoff: h => {
         if (tok !== S.token) return;
         S.handoffs[h.from] = h;
+        saveHandoff(S.round, h);
         if (S.seats[h.from]) S.seats[h.from].status = "done";
         if (h.kind === "tally") S.revealed.vote = true;
         schedule();
       },
     });
     if (tok !== S.token) return;
-    const failed = Core.SESSION.order.filter(id => id in res.failed);
+    const failed = graph.order.filter(id => id in res.failed);
     const broken = failed.filter(id => !S.seats[id])[0];
     if (broken) throw res.failed[broken];
     if (failed.length) return settle(failed);
     S.phase = "done";
     pauseClock();
+    saveState();
     schedule();
   }
 
   function work(task, tok) {
     const step = Core.STEPS[task.kind];
     if (!step) throw new Error("No worker handles " + task.kind + " steps.");
-    return step.compute ? step.compute(task) : askAgent(task, step, tok);
+    if (step.compute) return step.compute(task);
+    // A step with nothing to do, such as answering no questions, hands on its input without asking an agent.
+    const skipped = step.skip ? step.skip(task) : null;
+    if (skipped) {
+      const seat = S.seats[task.node];
+      Object.assign(seat, { text: skipped.text, skipped: true, agent: skipped.agent, served: skipped.served });
+      return skipped;
+    }
+    return askAgent(task, step, tok);
   }
 
   function sectionOf(id) {
-    return isBuilder(id) ? "proposals" : isCouncil(id) ? "council" : "plan";
+    return isBuilder(id) ? "proposals" : isAsk(id) || isAmend(id) ? "questions" : isCouncil(id) ? "council" : isReviewer(id) ? "review" : "plan";
   }
 
   // An agent step: the seat's agent writes from the task's inputs alone, and the seat shows it writing.
@@ -395,6 +521,7 @@
     seat.truncated = false;
     seat.ctl = ctl;
     const agent = S.agents[Core.roleOf(id)];
+    const project = task.inputs.brief.data.project || null;
     seat.agent = agent;
     seat.served = "";
     seat.activity = "";
@@ -402,12 +529,15 @@
     schedule();
     const live = () => tok === S.token && seat.ctl === ctl;
     try {
-      // Hermes Agent has tools and may be able to read the project; the others only see the prompt.
-      const prompt = step.prompt(task, { explore: !!PROVIDERS[agent.provider].agentic });
+      // Claude Code works inside the project folder. Hermes Agent has tools of its own and may be able to read the
+      // project. The others only see the prompt.
+      const kind = PROVIDERS[agent.provider];
+      const prompt = step.prompt(task, { explore: !!kind.agentic, inProject: !!(kind.local && project) });
       if (agent.provider === "claude" && Core.utf8Len(prompt) > 64000) throw { code: "prompt_too_large", message: "Prompt over the size limit." };
       const res = await Providers.run(agent, prompt, {
         sample: sampleFn,
         config: credsSnapshot(),
+        cwd: project ? project.path : "",
         signal: ctl.signal,
         onText: text => {
           if (!live()) return;
@@ -416,9 +546,12 @@
           S.heard = true;
           schedule();
         },
+        // An agent using its tools has stopped writing for now; what it wrote so far was a preamble.
         onActivity: (event, data) => {
           if (!live() || !/tool/i.test(event)) return;
-          seat.activity = toolName(data);
+          seat.status = "thinking";
+          seat.text = "";
+          seat.activity = activityOf(data);
           schedule();
         },
       });
@@ -466,12 +599,13 @@
       if (!worst || RANK[errInfo(code).kind] > RANK[errInfo(worst).kind]) worst = code;
     });
     const info = errInfo(worst);
-    const names = Core.namesList(failed.map(id => CAST[id].name));
+    const names = Core.namesList(failed.map(stepName));
     const example = S.seats[failed.filter(id => ((S.seats[id].error && S.seats[id].error.code) || "upstream_error") === worst)[0]];
     S.phase = info.kind === "fatal" ? "blocked" : "paused";
     S.notice = { text: (info.kind === "fatal" ? "" : names + " couldn't finish. ") + errText(worst, example), retry: info.kind === "retry" };
     S.canRetry = info.kind === "retry";
     pauseClock();
+    saveState();
     schedule();
   }
 
@@ -497,6 +631,7 @@
     S.notice = null;
     S.stoppedAt = Date.now();
     pauseClock();
+    saveState();
     const hadFocus = document.activeElement === els.convene || document.activeElement === els.railStop;
     render();
     if (hadFocus && !els.resume.hidden) els.resume.focus();
@@ -506,7 +641,7 @@
     if (!(S.phase === "stopped" || (S.phase === "paused" && S.canRetry))) return;
     // Settings changed while paused (a key added, another model picked) apply to the seats that run again.
     const agents = currentAgents();
-    const problem = checkAgents(agents);
+    const problem = checkAgents(agents, brief().project, true, !!brief().review);
     if (problem) {
       showAgentsProblem(problem);
       return;
@@ -529,6 +664,7 @@
     S.phase = "running";
     S.convenedAt = Date.now();
     startClock();
+    saveState();
     const hadFocus = document.activeElement === els.resume || document.activeElement === els.noticeRetry;
     render();
     if (hadFocus) els.convene.focus();
@@ -550,6 +686,7 @@
     S.notice = { text: "Something went wrong on this page. Retry to continue where the council left off.", retry: true };
     S.canRetry = true;
     pauseClock();
+    saveState();
     schedule();
   }
 
@@ -575,13 +712,21 @@
   }
 
   function settingsHint(agents) {
-    const list = ROLES.map(r => agents[r.id]);
+    const list = activeRoles(els.reviewOn.checked).map(r => agents[r.id]);
     const hints = [];
     const claude = list.filter(a => a.provider === "claude").map(a => a.model);
     if (claude.indexOf("complex") >= 0) hints.push("Frontier is Claude's most capable model and thinks longest, so its seats can take a few minutes.");
     else if (claude.length && claude.every(t => t === "quick")) hints.push("Fast is Claude's quickest, cheapest model.");
+    if (list.some(a => a.provider === "claude-code")) hints.push("Claude Code explores the project before it writes, so its seats can take a few minutes.");
     if (list.some(a => a.provider === "openrouter")) hints.push("OpenRouter bills your account for each request.");
     if (list.some(a => a.provider === "hermes")) hints.push("Hermes Agent may use its tools first, so its seats can take longer.");
+    if (els.questionsOn.checked) hints.push("The council's questions add up to twelve requests: each councilor's questions on each proposal, and each builder's answers.");
+    if (els.reviewOn.checked) hints.push("The final review adds three requests: two reviews and the Chair's revision.");
+    const blind = ["openrouter", "custom"].filter(p => list.some(a => a.provider === p));
+    if (local && proj.info && blind.length) {
+      hints.push(Core.listAnd(blind.map(p => (p === "custom" ? "your endpoint" : PROVIDERS[p].label))).replace(/^y/, "Y") +
+        " can't read the project folder, so " + (blind.length > 1 ? "their" : "its") + " seats work from the pasted context.");
+    }
     return hints.join(" ") || "Each role can run on a different provider and model.";
   }
 
@@ -589,13 +734,15 @@
 
   // Keys live in memory, and in this browser's storage only when "Remember" is ticked.
   const creds = { keys: { openrouter: "", hermes: "", custom: "" }, urls: { hermes: "", custom: "" }, remember: { openrouter: false, hermes: false, custom: false } };
-  const lastModel = { builders: {}, council: {}, chair: {} };
+  const lastModel = {};
+  ROLES.forEach(r => { lastModel[r.id] = {}; });
   const modelLists = { openrouter: Core.OPENROUTER_PRESETS.slice(), hermes: [], custom: [] };
 
   function credsSnapshot() {
     return {
       keys: Object.assign({}, creds.keys),
       urls: { hermes: creds.urls.hermes || PROVIDERS.hermes.defaultUrl, custom: creds.urls.custom },
+      local: local ? location.origin : "",
     };
   }
 
@@ -639,7 +786,8 @@
   }
 
   function modelPlaceholder(provider) {
-    return provider === "openrouter" ? "nousresearch/hermes-4-70b" : provider === "hermes" ? "hermes-agent" : "Model name";
+    return provider === "openrouter" ? "nousresearch/hermes-4-70b" : provider === "hermes" ? "hermes-agent" :
+      provider === "claude-code" ? "Claude Code's default model" : "Model name";
   }
 
   // Show the tier picker for Claude and a model field for everything else.
@@ -679,13 +827,19 @@
   function setProviderOptions() {
     ROLES.forEach(r => {
       Array.prototype.forEach.call(providerSelects[r.id].options, opt => {
-        const usable = Core.usableHere(opt.value, INSIDE);
+        let usable = Core.usableHere(opt.value, INSIDE);
+        let why = INSIDE ? " (outside Claude only)" : " (inside claude.ai only)";
+        if (usable && PROVIDERS[opt.value].local && localState !== "pending" && !providerReady(opt.value)) {
+          usable = false;
+          why = local ? " (not installed)" : " (needs npm start)";
+        }
         opt.disabled = !usable;
         const base = PROVIDERS[opt.value].label;
-        opt.textContent = usable ? base : base + (INSIDE ? " (outside Claude only)" : " (inside claude.ai only)");
+        opt.textContent = usable ? base : base + why;
       });
     });
     EXTERNAL.forEach(p => { providerSets[p].disabled = INSIDE; });
+    $("set-claude-code").disabled = INSIDE;
   }
 
   function writeHermesHelp() {
@@ -721,11 +875,12 @@
 
   function writeProvidersIntro() {
     els.providersIntro.textContent = INSIDE ?
-      "Quorum is open inside Claude, so every agent runs on Claude. Pages published on Claude can't reach other services. To use OpenRouter, Hermes Agent or another endpoint, open Quorum on its own, from the downloaded file or your GitHub Pages site." :
+      "Quorum is open inside Claude, so every agent runs on Claude. Pages published on Claude can't reach other services. To use OpenRouter, Hermes Agent or another endpoint, open Quorum on its own, from the downloaded file or your GitHub Pages site. To use Claude Code, run Quorum on your computer with npm start." :
       "Keys stay in this browser and are sent only to the service they belong to. Leave Remember off on a shared computer.";
   }
 
   function providerReady(p) {
+    if (p === "claude-code") return !!(local && local.claudeCode.available);
     if (p === "openrouter") return !!creds.keys.openrouter;
     if (p === "hermes") return !!creds.keys.hermes;
     return !!creds.urls.custom;
@@ -736,11 +891,23 @@
     if (INSIDE) {
       text = "Every agent runs on Claude here";
     } else {
-      const used = EXTERNAL.filter(p => ROLES.some(r => providerSelects[r.id].value === p));
+      const used = ["claude-code"].concat(EXTERNAL).filter(p => activeRoles(reviewing()).some(r => providerSelects[r.id].value === p));
       text = used.length ? Core.listAnd(used.map(p => PROVIDERS[p].label + (providerReady(p) ? " is set up" : " needs setting up"))) : "";
       if (text) text = text.charAt(0).toUpperCase() + text.slice(1);
     }
     setText(els.providersStatus, text);
+    renderClaudeCodeStatus();
+  }
+
+  function renderClaudeCodeStatus() {
+    let text = "", ok = false;
+    if (INSIDE) text = "Claude Code works when Quorum runs on your computer.";
+    else if (localState === "pending") text = "Looking for Quorum's local server\u2026";
+    else if (!local) text = "Claude Code works when Quorum runs on your computer: run npm start in Quorum's folder, then open the address it prints.";
+    else if (local.claudeCode.available) { text = "Claude Code " + local.claudeCode.version + " is installed."; ok = true; }
+    else text = "Quorum's server couldn't find Claude Code. Install it, or restart the server with QUORUM_CLAUDE_BIN set to its path.";
+    setText(els.statusClaudeCode, text);
+    els.statusClaudeCode.classList.toggle("is-ok", ok);
   }
 
   async function checkConnection(p) {
@@ -765,14 +932,17 @@
     }
   }
 
-  function toolName(data) {
-    try {
-      const o = JSON.parse(data);
-      const name = o && (o.tool || o.name || o.tool_name || (o.function && o.function.name));
-      return typeof name === "string" ? name.slice(0, 40) : "tools";
-    } catch (_) {
-      return "tools";
-    }
+  // What an agent is doing with a tool, as a phrase: "reading src/app.js", or "working with read_file".
+  function activityOf(data) {
+    let o = null;
+    try { o = JSON.parse(data); } catch (_) { o = null; }
+    const name = o && (o.tool || o.name || o.tool_name || (o.function && o.function.name));
+    const tool = typeof name === "string" && name ? name.slice(0, 40) : "";
+    const detail = o && typeof o.detail === "string" ? o.detail.slice(0, 120) : "";
+    if (detail && tool === "Read") return "reading " + detail;
+    if (detail && tool === "Grep") return "searching the code for \u201C" + detail + "\u201D";
+    if (detail && tool === "Glob") return "looking for " + detail;
+    return "working with " + (tool || "its tools");
   }
 
   /* ---------- Clock ---------- */
@@ -805,6 +975,7 @@
     else if (S.phase === "done") t = "Adjourned after " + fmtDuration(ms);
     else if (S.phase === "stopped") t = "Stopped at " + fmtDuration(ms);
     else if (S.phase !== "idle" && ms > 0) t = "Paused at " + fmtDuration(ms);
+    if (t && S.round > 1) t = "Round " + S.round + " \u00B7 " + t;
     setText(els.clock, t);
   }
 
@@ -843,9 +1014,13 @@
     renderRail();
     renderSections();
     renderProposals();
+    renderQuestions();
     renderCouncil();
     renderVote();
+    renderReview();
     renderPlan();
+    renderRevise();
+    renderRounds();
     renderNotice();
   }
 
@@ -859,6 +1034,10 @@
     toggle(els.resume, canResume);
     setText(els.resume, S.phase === "paused" ? "Retry" : "Resume");
     lengthInputs.forEach(i => { i.disabled = running; });
+    els.reviewOn.disabled = running;
+    els.questionsOn.disabled = running;
+    // The review agent can be set while a session with a final review is under way, for Resume and new rounds.
+    toggle(els.rowReview, els.reviewOn.checked || (S.phase !== "idle" && !!brief().review));
     ROLES.forEach(r => {
       providerSelects[r.id].disabled = running;
       tierSelects[r.id].disabled = running;
@@ -877,14 +1056,34 @@
     toggle(els.tierNote, !!tierNote);
     setText(els.tierNote, tierNote);
     renderProvidersStatus();
+    renderProject();
+    renderSessions();
   }
 
   function seatAvailable(id) {
     return isBuilder(id) ? S.revealed.proposals : isCouncil(id) ? S.revealed.council : S.revealed.plan;
   }
 
+  // The state a seat in the seating chart shows. The Chair's seat shows its revision after the final review once that
+  // has started.
+  // A builder's seat shows its answers to the council once it's answering, and a councilor's seat shows its questions
+  // until it starts its review.
+  function seatShown(id) {
+    if (id === "chair") return S.seats.final.status !== "idle" ? S.seats.final : S.seats.chair;
+    if (isBuilder(id)) {
+      const a = S.seats[amendId(id)];
+      return a.status !== "idle" && !a.skipped ? a : S.seats[id];
+    }
+    if (isCouncil(id) && S.seats[id].status === "idle") {
+      const asks = LETTERS.map(L => S.seats[askId(id, L)].status);
+      const status = ["error", "writing", "thinking", "stopped"].filter(x => asks.indexOf(x) >= 0)[0] || "idle";
+      return { status };
+    }
+    return S.seats[id];
+  }
+
   function seatPhrase(id) {
-    const s = S.seats[id];
+    const s = seatShown(id);
     switch (s.status) {
       case "thinking": return "thinking";
       case "writing": return "writing";
@@ -899,8 +1098,8 @@
   const popping = {};
   function renderSeats() {
     const w = winnerLetter();
-    ALL_IDS.forEach(id => {
-      const g = seatEls[id], s = S.seats[id], st = s.status;
+    SEAT_IDS.forEach(id => {
+      const g = seatEls[id], s = seatShown(id), st = s.status;
       let letter = "", glyph = "";
       if (isBuilder(id)) {
         letter = id;
@@ -950,20 +1149,35 @@
         return "Stopped. Resume to continue where the council left off.";
       case "paused": {
         const f = failedIds();
-        return "Paused. " + (f.length ? Core.namesList(f.map(id => CAST[id].name)) + " couldn't finish." : "");
+        return "Paused. " + (f.length ? Core.namesList(f.map(stepName)) + " couldn't finish." : "");
       }
       case "done":
-        return "The council has adjourned. Proposal " + w + " carried, and the plan is ready.";
+        return "The council has adjourned. Proposal " + w + " carried, and the " + (S.round > 1 ? "revised " : "") + "plan is ready.";
       default: {
         const nb = LETTERS.filter(L => S.seats[L].status === "done").length;
+        if (nb < 3 && S.round > 1) {
+          return nb === 0 ? "The builders are revising their proposals with your input." : "The builders are revising. " + nb + " of 3 proposals are in.";
+        }
         if (nb < 3) {
           if (!S.heard && nb === 0 && S.agents.builders.provider === "claude" && LETTERS.every(L => S.seats[L].status === "thinking")) {
             return "Waiting for Claude. If you're asked to allow this page to use Claude, allow it to begin.";
           }
-          return nb === 0 ? "The builders are drafting their proposals." : "The builders are drafting. " + nb + " of 3 proposals are in.";
+          if (nb === 0) {
+            return S.agents.builders.provider === "claude-code" ? "The builders are exploring the project and drafting their proposals." : "The builders are drafting their proposals.";
+          }
+          return "The builders are drafting. " + nb + " of 3 proposals are in.";
+        }
+        const settled = AMEND_IDS.filter(id => S.seats[id].status === "done").length;
+        if (brief().questions && settled < 3) {
+          return "The council is questioning the proposals, and the builders are answering." + (settled ? " " + settled + " of 3 proposals are settled." : "");
         }
         const nc = COUNCIL_IDS.filter(id => S.seats[id].status === "done").length;
-        if (nc < 3) return nc === 0 ? "The council is reviewing the proposals." : "The council is reviewing. " + nc + " of 3 ballots are cast.";
+        if (nc < 3) return nc === 0 ? "The council is reviewing the " + (S.round > 1 ? "revised " : "") + "proposals." : "The council is reviewing. " + nc + " of 3 ballots are cast.";
+        if (brief().review && S.seats.chair.status === "done") {
+          const nr = REVIEWER_IDS.filter(id => S.seats[id].status === "done").length;
+          if (nr < REVIEWER_IDS.length) return "The reviewers are checking the plan for scaling and security." + (nr ? " " + nr + " of 2 reviews are in." : "");
+          return "The Chair is revising the plan after the final review.";
+        }
         if (!w) return "The vote is tied. The Chair is casting the deciding vote and writing the plan.";
         return "Proposal " + w + " carried the vote. The Chair is writing the plan.";
       }
@@ -974,10 +1188,22 @@
     setText(els.status, statusLine());
     const states = {
       proposals: S.revealed.proposals ? stageState(LETTERS) : "waiting",
+      questions: S.revealed.questions ? stageState(ASK_IDS.concat(AMEND_IDS)) : "waiting",
       council: S.revealed.council ? stageState(COUNCIL_IDS) : "waiting",
       vote: tally() ? (tally().decidedBy === "chair" && !decided() ? "tied" : "done") : "waiting",
-      plan: S.revealed.plan ? stageState(["chair"]) : "waiting",
+      review: S.revealed.review ? stageState(REVIEWER_IDS) : "waiting",
+      plan: S.revealed.plan ? stageState(reviewing() ? ["chair", "final"] : ["chair"]) : "waiting",
     };
+    // The stages a session has, numbered in order in the rail and in each section's heading.
+    const review = reviewing(), questions = questioning();
+    toggle(els.stageReview, review);
+    toggle(els.stageQuestions, questions);
+    const order = ["proposals", questions && "questions", "council", "vote", review && "review", "plan"].filter(Boolean);
+    stageBtns.forEach(btn => {
+      const n = String(order.indexOf(btn.getAttribute("data-stage")) + 1);
+      setText(btn.querySelector(".stage-n"), n);
+      setText($(btn.getAttribute("data-target")).querySelector(".sec-num"), n);
+    });
     stageBtns.forEach(btn => {
       const key = btn.getAttribute("data-stage");
       const st = states[key];
@@ -988,6 +1214,7 @@
     });
     toggle(els.railStop, S.phase === "running");
     renderClock();
+    renderSaveState();
   }
 
   function renderSections() {
@@ -995,8 +1222,17 @@
     toggle(els.secProposals, S.revealed.proposals);
     toggle(els.secCouncil, S.revealed.council);
     toggle(els.secVote, S.revealed.vote);
+    toggle(els.secReview, S.revealed.review);
+    toggle(els.secQuestions, S.revealed.questions);
     toggle(els.secPlan, S.revealed.plan);
     setText(els.motionQuote, brief().feature);
+    const input = roundInput(S.handoffs);
+    toggle(els.motionRound, !!input);
+    setText(els.motionRoundIntro, input ? "Round " + S.round + " revises the round " + (S.round - 1) + " plan with your input:" : "");
+    setText(els.motionRoundQuote, input);
+    const pr = brief().project;
+    toggle(els.motionProject, !!pr);
+    setHTML(els.motionProject, pr ? "In the project <code>" + Core.esc(pr.path) + "</code>" : "");
     if (els.motionContextBody._session !== S.session) {
       els.motionContextBody._session = S.session;
       const blocks = Core.contextBlocks(brief().context);
@@ -1022,7 +1258,8 @@
   function waitCopy(agent) {
     if (!agent || agent.provider !== "claude") {
       return agent && agent.provider === "hermes" ? "Hermes Agent may use its tools first, so writing can take a few minutes to start." :
-        "Writing usually starts within a minute.";
+        agent && agent.provider === "claude-code" ? "Claude Code explores the project first, so writing can take a few minutes to start." :
+          "Writing usually starts within a minute.";
     }
     return agent.model === "quick" ? "Writing usually starts within a few seconds." :
       agent.model === "complex" ? "Frontier models think first, so writing can take a couple of minutes to start." :
@@ -1053,27 +1290,33 @@
     el.classList.toggle("is-sub", sub);
     const full = agentFor(id);
     if (sub) el.title = TIERS[s.agent.model].label + " isn't available on your plan";
-    else if (full.provider !== "claude") el.title = PROVIDERS[full.provider].label + ": " + full.model;
+    else if (full.provider !== "claude") el.title = PROVIDERS[full.provider].label + (full.model ? ": " + full.model : "");
     else el.removeAttribute("title");
   }
 
   function placeholderFor(id) {
     const s = S.seats[id], name = CAST[id].name;
     if (s.status === "thinking") {
-      if (s.activity) return { pulse: true, text: name + " is working with " + (s.activity === "tools" ? "its tools." : s.activity + ".") };
+      if (s.activity) return { pulse: true, text: name + " is " + s.activity + "." };
       const claudeFirst = !S.heard && s.agent && s.agent.provider === "claude";
       return { pulse: true, text: claudeFirst ? "Waiting for Claude. If you're asked to allow this page to use Claude, allow it to begin." : name + " is thinking. " + waitCopy(s.agent) };
     }
     if (s.status === "writing") return { pulse: true, text: name + " is writing." };
     if (s.status === "error") {
-      return { pulse: false, text: isBuilder(id) ? "This proposal couldn't be finished." : isCouncil(id) ? "This review couldn't be finished." : "The plan couldn't be finished." };
+      return { pulse: false, text: isBuilder(id) || isAmend(id) ? "This proposal couldn't be finished." : isAsk(id) ? "These questions couldn't be finished." : isCouncil(id) || isReviewer(id) ? "This review couldn't be finished." : "The plan couldn't be finished." };
     }
     if (s.status === "stopped") return { pulse: false, text: "Stopped before any words were written." };
     if (s.status === "done") return { pulse: false, text: "" };
-    return {
-      pulse: false,
-      text: isBuilder(id) ? "Waiting to begin." : isCouncil(id) ? "The council meets once all three proposals are in." : "The Chair writes once the votes are counted.",
-    };
+    return { pulse: false, text: waitingText(id) };
+  }
+
+  function waitingText(id) {
+    if (isBuilder(id)) return "Waiting to begin.";
+    if (isAsk(id)) return "Waiting for Proposal " + Core.stepOf(id).letter + ".";
+    if (isAmend(id)) return "The builder answers once the council has asked its questions.";
+    if (isCouncil(id)) return "The council meets once all three proposals are " + (brief().questions ? "settled." : "in.");
+    if (isReviewer(id)) return "The reviewers start once the Chair has written the plan.";
+    return id === "final" ? "The Chair revises the plan once the reviewers are done." : "The Chair writes once the votes are counted.";
   }
 
   function noteFor(id) {
@@ -1134,7 +1377,7 @@
   }
 
   function proposalMeta(id) {
-    const s = S.seats[id];
+    const s = S.seats[proposalSeatId(id)];
     if (s.status === "writing") return Core.wordCount(s.text) + " words so far";
     if (s.status === "error") return "Couldn't finish";
     if (s.status === "stopped") return s.text ? "Stopped part-way" : "";
@@ -1171,13 +1414,62 @@
     });
     const nb = LETTERS.filter(L => S.seats[L].status === "done").length;
     setText(els.propCount, nb === 3 ? "All three are in" : nb + " of 3 in");
-    const id = S.sel.proposals, s = S.seats[id];
+    // A proposal the council questioned shows as its builder adjusted it, with the first version beneath.
+    const id = S.sel.proposals, viewId = proposalSeatId(id), s = S.seats[viewId], am = S.seats[amendId(id)];
     els.propPane.setAttribute("aria-labelledby", "tab-" + id);
     setLetter(els.propPane, id);
-    setText(els.propByline, "Proposal " + id + ", by " + Core.midName(CAST[id].name));
-    renderTier(els.propTier, id);
-    renderDoc(els.propDoc, id, s.text, s.status, placeholderFor(id));
-    renderNote(els.propNote, noteFor(id));
+    setText(els.propByline, "Proposal " + id + ", by " + Core.midName(CAST[id].name) + (viewId !== id ? ", adjusted after the council's questions" : ""));
+    renderTier(els.propTier, viewId);
+    renderDoc(els.propDoc, viewId, s.text, s.status, placeholderFor(viewId));
+    let note = noteFor(viewId);
+    if (!note && viewId === id && !am.skipped) {
+      if (am.status === "thinking") note = { text: "The council asked about this proposal, and " + Core.midName(CAST[id].name) + " is answering and adjusting it.", error: false };
+      else if (am.status === "error" || am.status === "stopped") note = noteFor(amendId(id));
+    }
+    renderNote(els.propNote, note);
+    toggle(els.propDraft, viewId !== id);
+    if (viewId !== id) setHTML(els.propDraftDoc, Core.renderMarkdown(S.seats[id].text));
+  }
+
+  // Each proposal's questions from the councilors, and its builder's answers.
+  function renderQuestions() {
+    if (!S.revealed.questions) return;
+    LETTERS.forEach(L => {
+      const tab = $("qtab-" + L), am = S.seats[amendId(L)];
+      const asks = COUNCIL_IDS.map(c => S.seats[askId(c, L)]);
+      const asked = COUNCIL_IDS.map(c => handedOff(askId(c, L)));
+      const all = asked.every(Boolean), n = asked.reduce((k, d) => k + (d ? d.questions.length : 0), 0);
+      const states = asks.concat([am]).map(x => x.status);
+      const status = am.status === "done" ? "done" : ["error", "writing", "thinking", "stopped"].filter(x => states.indexOf(x) >= 0)[0] || "idle";
+      renderTab(tab, S.sel.questions === L, status);
+      setText(tab.querySelector(".tab-title"), all ? (n ? n + (n === 1 ? " question" : " questions") : "No questions") :
+        asks.some(x => x.status !== "idle") ? "Asking\u2026" : "Waiting");
+      setText(tab.querySelector(".tab-meta"), am.status === "done" ? (am.skipped ? "Stands as submitted" : "Adjusted") :
+        am.status === "thinking" || am.status === "writing" ? "Answering\u2026" : am.status === "error" ? "Couldn't finish" : "");
+    });
+    const settled = AMEND_IDS.filter(id => S.seats[id].status === "done").length;
+    setText(els.questionsCount, settled === 3 ? "All three are settled" : settled + " of 3 settled");
+    const L = S.sel.questions, builder = Core.midName(CAST[L].name);
+    els.questionsPane.setAttribute("aria-labelledby", "qtab-" + L);
+    setLetter(els.questionsPane, L);
+    const placeholder = p => '<p class="placeholder">' + (p.pulse ? '<span class="pulse" aria-hidden="true"></span>' : "") + "<span>" + Core.esc(p.text) + "</span></p>";
+    const blocks = COUNCIL.map(c => {
+      const id = askId(c.id, L), seat = S.seats[id], d = handedOff(id);
+      const body = d ? (d.questions.length ? "<ol>" + d.questions.map(q => "<li>" + Core.inline(q) + "</li>").join("") + "</ol>" : '<p class="qa-none">No questions.</p>') :
+        seat.text ? Core.renderMarkdown(seat.text.replace(/^[ \t]{0,3}#{1,6}[ \t]+questions[ \t]*$/im, "")) : placeholder(placeholderFor(id));
+      const note = noteFor(id);
+      return '<div class="qa-block"><p class="qa-who">' + Core.esc(c.name) + " asks</p><div class=\"doc\">" + body + "</div>" +
+        (note && note.error ? '<p class="pane-note is-error">' + Core.esc(note.text) + "</p>" : "") + "</div>";
+    });
+    const am = S.seats[amendId(L)], answers = am.text && !am.skipped ? Core.sectionText(am.text, "Answers to the council") : "";
+    const answer = am.skipped ? '<p class="qa-none">No one asked anything, so the proposal stands as submitted.</p>' :
+      answers ? Core.renderMarkdown(answers) :
+        am.status === "writing" ? placeholder({ pulse: true, text: CAST[L].name + " is adjusting the proposal." }) :
+          placeholder(placeholderFor(amendId(L)));
+    const amNote = noteFor(amendId(L));
+    blocks.push('<div class="qa-block is-answer"><p class="qa-who">' + Core.esc(builder.replace(/^the/, "The")) + " answers</p><div class=\"doc\">" + answer + "</div>" +
+      (amNote && amNote.error ? '<p class="pane-note is-error">' + Core.esc(amNote.text) + "</p>" : "") + "</div>");
+    setHTML(els.questionsDoc, blocks.join(""));
   }
 
   function suffix(n) {
@@ -1266,18 +1558,52 @@
     setText(els.verdict, Core.verdictText(t, titles, decided()));
   }
 
+  function renderReview() {
+    if (!S.revealed.review) return;
+    REVIEWERS.forEach(r => {
+      const tab = $("tab-" + r.id), s = S.seats[r.id], done = handedOff(r.id);
+      renderTab(tab, S.sel.review === r.id, s.status);
+      setText(tab.querySelector(".tab-title"), done ? Core.findingsText(done.findings) : statusTitle(r.id));
+      setText(tab.querySelector(".tab-meta"), s.status === "writing" ? Core.wordCount(s.text) + " words so far" : s.status === "error" ? "Couldn't finish" : "");
+    });
+    const n = REVIEWER_IDS.filter(id => S.seats[id].status === "done").length;
+    setText(els.reviewCount, n === REVIEWER_IDS.length ? "Both reviews are in" : n + " of 2 in");
+    const id = S.sel.review, s = S.seats[id];
+    els.reviewPane.setAttribute("aria-labelledby", "tab-" + id);
+    setText(els.reviewByline, "Review by " + Core.midName(CAST[id].name));
+    renderTier(els.reviewTier, id);
+    renderDoc(els.reviewDoc, id, s.text, s.status, placeholderFor(id));
+    renderNote(els.reviewNote, noteFor(id));
+  }
+
+  // With a final review, the plan pane shows the Chair's plan until its revision starts to arrive, then the revision.
   function renderPlan() {
     if (!S.revealed.plan) return;
-    const s = S.seats.chair, w = winnerLetter(), titles = currentTitles();
+    const reviewed = !!brief().review, fin = S.seats.final;
+    const showFinal = reviewed && (!!fin.text || fin.status === "done");
+    const planId = showFinal ? "final" : "chair";
+    const s = S.seats[planId], w = winnerLetter(), titles = currentTitles();
     setLetter(els.plan, w || "");
     const from = w ? "Proposal " + w + (titles[w] ? ", \u201C" + titles[w] + "\u201D" : "") : "";
-    const by = !w ? "The vote is tied, so the Chair casts the deciding vote in the plan." :
-      s.status === "done" ? "Written by the Chair from " + from + "." : "The Chair writes from " + from + ".";
+    const by = (S.round > 1 ? "Round " + S.round + ". " : "") + (!w ? "The vote is tied, so the Chair casts the deciding vote in the plan." :
+      fin.status === "done" && reviewed ? "Written by the Chair from " + from + ", and revised after the final review." :
+        S.seats.chair.status === "done" ? "Written by the Chair from " + from + "." : "The Chair writes from " + from + ".");
     setText(els.planByline, by);
-    renderTier(els.planTier, "chair");
-    renderDoc(els.planDoc, "chair", s.text, s.status, placeholderFor("chair"));
-    renderNote(els.planNote, noteFor("chair"));
-    toggle(els.planActions, s.status === "done");
+    renderTier(els.planTier, planId);
+    renderDoc(els.planDoc, planId, s.text, s.status, placeholderFor(planId));
+    let note = noteFor(planId);
+    if (!note && reviewed && !showFinal && S.seats.chair.status === "done") {
+      note = fin.status === "error" || fin.status === "stopped" ? noteFor("final") : {
+        text: fin.status === "thinking" ? "The Chair is revising this plan after the final review." :
+          "This is the plan before the final review. The Chair revises it once the reviewers are done.",
+        error: false,
+      };
+    }
+    renderNote(els.planNote, note);
+    const draft = reviewed && handedOff("final") ? handedOff("chair") : null;
+    toggle(els.planDraft, !!draft);
+    if (draft) setHTML(els.planDraftDoc, Core.renderMarkdown(draft.text));
+    toggle(els.planActions, !!planHandoff());
     const canSave = !!downloadsNS || !INSIDE;
     toggle(els.dlPlan, canSave);
     toggle(els.dlRecord, canSave);
@@ -1371,13 +1697,29 @@
     btn._flash = setTimeout(() => { btn.textContent = label; }, 2400);
   }
 
-  function recordNow() {
+  // The agent that wrote each step of a round, from its handoffs.
+  function tiersOf(handoffs) {
     const tiers = {};
-    ALL_IDS.forEach(id => { tiers[id] = agentText(id); });
-    return Core.recordMarkdown(Object.assign(Core.sessionOf(S.handoffs), {
-      setupLine: "Agents: " + Core.agentsSentence(S.agents, { customUrl: creds.urls.custom }) + " Length: " + LENGTHS[brief().length].label + ".",
-      tiers,
+    ALL_IDS.forEach(id => {
+      const d = handoffs[id] && handoffs[id].data;
+      tiers[id] = d && d.agent ? Core.agentLabel({ provider: d.agent.provider, model: d.served || d.agent.model }, { customUrl: creds.urls.custom }) : "";
+    });
+    return tiers;
+  }
+
+  // The record of the latest round, followed by each earlier round, newest first.
+  function recordNow() {
+    let out = Core.recordMarkdown(Object.assign(Core.sessionOf(S.handoffs), {
+      setupLine: "Agents: " + Core.agentsSentence(S.agents, { customUrl: creds.urls.custom }) + " Length: " + LENGTHS[brief().length].label + "." +
+        (brief().review ? " Final review on " + Core.agentLabel(S.agents.review, { customUrl: creds.urls.custom }) + "." : "") +
+        (brief().project ? " Project: " + brief().project.path + "." : "") + (S.round > 1 ? " Round " + S.round + "." : ""),
+      tiers: tiersOf(S.handoffs),
     }));
+    for (let i = S.past.length - 1; i >= 0; i--) {
+      const md = Core.recordMarkdown(Object.assign(Core.sessionOf(S.past[i]), { tiers: tiersOf(S.past[i]) }));
+      out += "\n---\n\n# Round " + (i + 1) + "\n\n" + Core.shiftHeadings(md, 1);
+    }
+    return out;
   }
 
   // Outside Claude there's no save capability; a plain download link does the job.
@@ -1394,7 +1736,7 @@
   }
 
   async function saveFile(kind, btn) {
-    const plan = handedOff("chair");
+    const plan = planHandoff();
     if (!plan) return;
     const planText = plan.text;
     const base = Core.slug(Core.titleOf(planText) || brief().feature.slice(0, 60));
@@ -1426,7 +1768,7 @@
     }
   }
 
-  function wireTabs(list, group, keys) {
+  function wireTabs(list, group, keys, prefix) {
     list.addEventListener("click", e => {
       const tab = e.target.closest('[role="tab"]');
       if (tab) selectTab(group, tab.getAttribute("data-key"));
@@ -1443,7 +1785,7 @@
       if (j < 0) return;
       e.preventDefault();
       selectTab(group, keys[j]);
-      $("tab-" + keys[j]).focus();
+      $((prefix || "tab-") + keys[j]).focus();
     });
   }
 
@@ -1597,6 +1939,406 @@
     els.exampleNote.hidden = true;
   }
 
+  /* ---------- Project folder ---------- */
+
+  // With Quorum's local server, the session can be about a folder on this computer. Seats on Claude Code work inside
+  // it, and agents with tools of their own are told where it is. value is the path the lookup was for, info what the
+  // server found there, and listing the folder the browser shows.
+  const proj = { value: "", info: null, error: "", note: "", pending: null, seq: 0, listing: null, browsing: false };
+  let projectTimer = 0;
+
+  async function getFolder(path) {
+    let res, body = null;
+    try {
+      res = await fetch(localUrl("folder?path=" + encodeURIComponent(path)));
+    } catch (_) {
+      throw { message: "Couldn't reach Quorum's local server. Check that it's still running." };
+    }
+    try { body = await res.json(); } catch (_) { body = null; }
+    if (!res.ok || !body) throw { message: (body && body.error && body.error.message) || "That folder couldn't be read." };
+    return body;
+  }
+
+  function checkProject(text) {
+    clearTimeout(projectTimer);
+    const seq = ++proj.seq;
+    proj.value = text;
+    proj.info = null;
+    proj.error = "";
+    if (!text) {
+      proj.pending = null;
+      schedule();
+      return Promise.resolve();
+    }
+    const done = getFolder(text).then(info => {
+      if (seq !== proj.seq) return;
+      proj.info = info;
+      proj.listing = info;
+    }, e => {
+      if (seq === proj.seq) proj.error = e.message;
+    }).then(() => {
+      if (seq !== proj.seq) return;
+      proj.pending = null;
+      schedule();
+    });
+    proj.pending = done;
+    schedule();
+    return done;
+  }
+
+  function chooseProject(path) {
+    els.projectPath.value = path;
+    proj.note = "";
+    store.set("quorum:project", path);
+    return checkProject(path);
+  }
+
+  function projectStatusHTML() {
+    const i = proj.info;
+    if (proj.note) return { html: Core.esc(proj.note), error: true };
+    if (!proj.value) return { html: "Choose the folder of the project this feature is for. Seats on Claude Code work inside it, reading and searching the code without changing it." };
+    if (proj.pending) return { html: "Looking for the folder\u2026" };
+    if (proj.error) return { html: Core.esc(proj.error), error: true };
+    if (!i) return { html: "" };
+    const on = i.git ? (i.git.branch ? " on " + Core.esc(i.git.branch) : i.git.detached ? " at " + Core.esc(i.git.detached) : "") : "";
+    const where = !i.git ? ". It isn't in a Git repository." : i.git.root === i.path ? ", a Git repository" + on + "." : ", in a Git repository" + on + ".";
+    return { html: "Found <strong>" + Core.esc(i.name) + "</strong>" + where + (i.claudeMd ? " It has a CLAUDE.md, which Claude Code reads." : "") };
+  }
+
+  function renderProject() {
+    toggle(els.project, !!local);
+    if (!local) return;
+    const running = S.phase === "running";
+    els.projectPath.readOnly = running;
+    els.projectBrowse.disabled = running;
+    const st = projectStatusHTML();
+    setHTML(els.projectStatus, st.html);
+    els.projectStatus.classList.toggle("is-error", !!st.error);
+    if (st.error) els.projectPath.setAttribute("aria-invalid", "true");
+    else els.projectPath.removeAttribute("aria-invalid");
+    toggle(els.projectBrowser, proj.browsing);
+    els.projectBrowse.setAttribute("aria-expanded", proj.browsing ? "true" : "false");
+    setText(els.projectBrowse, proj.browsing ? "Close" : "Browse");
+    if (!proj.browsing) return;
+    const l = proj.listing, off = running ? " disabled" : "";
+    setText(els.projectWhere, l ? l.path : "Loading\u2026");
+    const item = (path, label, up) => '<li><button type="button" class="project-dir' + (up ? " is-up" : "") + '" data-path="' + Core.esc(path) + '"' + off + ">" + label + "</button></li>";
+    const items = [];
+    if (l && l.parent) items.push(item(l.parent, '<span aria-hidden="true">\u2191 </span>Parent folder', true));
+    if (l) l.dirs.forEach(d => items.push(item(d.path, Core.esc(d.name) + "/", false)));
+    if (l && !l.dirs.length) items.push('<li class="project-empty">' + (l.unreadable ? "This folder can't be read." : "No folders inside.") + "</li>");
+    if (l && l.more) items.push('<li class="project-empty">And ' + fmtNum(l.more) + " more. Type the path to reach them.</li>");
+    setHTML(els.projectDirs, items.join(""));
+  }
+
+  /* ---------- Saved sessions ---------- */
+
+  // With Quorum's local server, every session is saved as it runs: its settings, and the handoff each step makes in
+  // each round. A saved session opened again, after the page or the server stopped, carries on from its handoffs.
+  // Saves go one after another, so a session's status is written after the handoffs that led to it.
+  const saved = { list: [], listed: false, listError: "", queue: Promise.resolve(), pending: 0, error: "", confirm: "" };
+
+  function canSave() {
+    return !!(local && local.sessions);
+  }
+
+  async function api(method, route, body) {
+    let res, out = null;
+    try {
+      res = await fetch(localUrl(route), body === undefined ? { method } :
+        { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    } catch (_) {
+      throw new Error("Couldn't reach Quorum's local server.");
+    }
+    try { out = await res.json(); } catch (_) { out = null; }
+    if (!res.ok) throw new Error((out && out.error && out.error.message) || "Quorum's server answered " + res.status + ".");
+    return out;
+  }
+
+  function save(request) {
+    const id = S.sessionId;
+    if (!id) return;
+    saved.pending += 1;
+    schedule();
+    saved.queue = saved.queue
+      .then(() => request(id))
+      .catch(e => { if (id === S.sessionId) saved.error = e.message; })
+      .then(() => { saved.pending -= 1; schedule(); });
+  }
+
+  function saveHandoff(round, h) {
+    save(id => api("PUT", "sessions/" + id + "/rounds/" + round + "/" + h.from, { kind: h.kind, data: h.data }));
+  }
+
+  function sessionTitle() {
+    const plan = planHandoff() || handedOff("chair");
+    const title = plan ? Core.titleOf(plan.text) : "";
+    return title || brief().feature.trim().split("\n")[0].slice(0, 120) || "Untitled session";
+  }
+
+  function saveState() {
+    const body = { status: S.phase === "idle" ? "stopped" : S.phase, round: S.round, agents: S.agents, title: sessionTitle(), elapsed: Math.round(elapsed()) };
+    save(id => api("PATCH", "sessions/" + id, body));
+    if (S.phase !== "running") save(() => refreshSessions());
+  }
+
+  function setSessionHash(id) {
+    try { history.replaceState(null, "", id ? "#session=" + id : location.pathname + location.search); } catch (_) { /* no history here */ }
+  }
+
+  // A new session starts saving before its first step runs, with the brief and the revision it was handed.
+  async function startSaving() {
+    S.sessionId = null;
+    saved.error = "";
+    if (!canSave()) return;
+    setSessionHash(null);
+    const b = brief();
+    try {
+      const o = await api("POST", "sessions", { title: sessionTitle(), project: b.project ? b.project.path : null, status: "running", agents: S.agents });
+      S.sessionId = o.session.id;
+      setSessionHash(S.sessionId);
+      Core.HANDED_IN.forEach(k => saveHandoff(S.round, S.handoffs[k]));
+      save(() => refreshSessions());
+    } catch (e) {
+      saved.error = e.message;
+    }
+    schedule();
+  }
+
+  async function refreshSessions() {
+    if (!canSave()) return;
+    try {
+      saved.list = (await api("GET", "sessions")).sessions;
+      saved.listError = "";
+    } catch (e) {
+      saved.listError = e.message;
+    }
+    saved.listed = true;
+    schedule();
+  }
+
+  function kindOfContext(title) {
+    const k = Object.keys(CONTEXT_KINDS).filter(x => CONTEXT_KINDS[x].title && CONTEXT_KINDS[x].title === title)[0];
+    return k || "other";
+  }
+
+  // Opens a saved session where it got to. Steps that were running when it stopped are shown as stopped, so Resume
+  // asks for them again; a finished session is ready for questions and input on its plan.
+  async function openSession(id) {
+    if (S.phase === "running" || S.connecting) return;
+    let o;
+    try {
+      o = await api("GET", "sessions/" + encodeURIComponent(id));
+    } catch (e) {
+      saved.listError = "That session couldn't be opened. " + e.message;
+      els.sessions.open = true;
+      render();
+      return;
+    }
+    const rounds = {};
+    o.handoffs.forEach(h => {
+      rounds[h.round] = rounds[h.round] || {};
+      rounds[h.round][h.node] = Graph.handoff(h.node, h.kind, h.data);
+    });
+    const last = o.session.round;
+    const current = rounds[last] || {};
+    if (!current.brief) {
+      saved.listError = "That session was saved without its brief, so it can't be opened.";
+      render();
+      return;
+    }
+    if (!current.revision) current.revision = Graph.handoff("revision", "revision", null);
+    abortAll();
+    S.token += 1;
+    S.session += 1;
+    resetSeats();
+    S.sessionId = o.session.id;
+    saved.error = "";
+    S.round = last;
+    S.past = [];
+    for (let r = 1; r < last; r++) S.past.push(rounds[r] || {});
+    S.handoffs = current;
+    S.agents = Core.normalizeAgents(o.session.agents, INSIDE);
+    applyAgents(S.agents);
+    const graph = Core.graphFor(S.handoffs.brief.data);
+    const ready = Graph.ready(graph, S.handoffs);
+    ALL_IDS.forEach(seatId => {
+      const h = S.handoffs[seatId], seat = S.seats[seatId];
+      if (h) {
+        seat.status = "done";
+        seat.skipped = h.kind === "amend" && !h.data.amended;
+        seat.text = String(h.data.text || "");
+        seat.truncated = !!h.data.truncated;
+        seat.agent = h.data.agent || null;
+        seat.served = h.data.served || "";
+      } else if (ready.indexOf(seatId) >= 0) {
+        seat.status = "stopped";
+      }
+    });
+    const finished = graph.order.every(n => S.handoffs[n]);
+    S.phase = finished ? "done" : "stopped";
+    S.revealed = {
+      proposals: true,
+      questions: ASK_IDS.some(id => S.handoffs[id] || ready.indexOf(id) >= 0),
+      council: Core.SESSION.nodes.advocate.needs.every(n => S.handoffs[n]) && graph.nodes.advocate.needs.every(n => S.handoffs[n]),
+      vote: !!S.handoffs.tally,
+      review: !!(S.handoffs.brief.data.review && S.handoffs.chair),
+      plan: !!S.handoffs.tally,
+    };
+    S.sel = { proposals: "A", council: "advocate", review: "scaling" };
+    S.clock = { startedAt: 0, accumulated: o.session.elapsed || 0 };
+    clearInterval(clockTimer);
+    S.notice = null;
+    S.canRetry = false;
+    S.heard = true;
+    S.stoppedAt = 0;
+    // The form shows what the session is about, so it can be convened again as it is or changed.
+    const b = brief();
+    setForm({ feature: b.feature, context: b.context.map(c => ({ kind: kindOfContext(c.title), title: c.title, text: c.text })) });
+    els.projectPath.value = b.project ? b.project.path : "";
+    checkProject(els.projectPath.value.trim());
+    els.reviewOn.checked = !!b.review;
+    els.questionsOn.checked = !!b.questions;
+    setSessionHash(S.sessionId);
+    els.sessions.open = false;
+    render();
+    scrollToSection(finished ? els.secPlan : els.secProposals);
+  }
+
+  async function deleteSession(id) {
+    try {
+      await api("DELETE", "sessions/" + encodeURIComponent(id));
+    } catch (e) {
+      saved.listError = "That session couldn't be deleted. " + e.message;
+    }
+    if (id === S.sessionId) {
+      S.sessionId = null;
+      setSessionHash(null);
+    }
+    await refreshSessions();
+  }
+
+  function fmtWhen(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return "";
+    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+
+  function renderSessions() {
+    toggle(els.sessions, canSave());
+    if (!canSave()) return;
+    const list = saved.list, running = S.phase === "running";
+    const open = list.filter(x => x.status !== "done").length;
+    setText(els.sessionsStatus, !saved.listed ? "" : !list.length ? "None yet" :
+      list.length + (list.length === 1 ? " session" : " sessions") + (open ? ", " + open + " unfinished" : ""));
+    setText(els.sessionsIntro, saved.listError ||
+      "Each session is saved in " + local.sessions.file + " as it runs, so you can come back to it after closing this page or stopping the server.");
+    els.sessionsIntro.classList.toggle("is-error", !!saved.listError);
+    const off = running ? " disabled" : "";
+    setHTML(els.sessionList, list.map(x => {
+      const here = x.id === S.sessionId;
+      const project = x.project ? x.project.split(/[\\/]/).filter(Boolean).pop() : "";
+      const meta = [project, x.round > 1 ? "Round " + x.round : "", x.status === "done" ? "Plan ready" : "Unfinished", fmtWhen(x.updated_at), here ? "Open now" : ""].filter(Boolean).join(" \u00B7 ");
+      const confirming = saved.confirm === x.id;
+      return '<li class="session-item"' + (here ? ' aria-current="true"' : "") + ">" +
+        '<button type="button" class="session-open" data-open="' + Core.esc(x.id) + '"' + off + ">" + Core.esc(x.title) + "</button>" +
+        '<p class="session-meta">' + Core.esc(meta) + "</p>" +
+        '<button type="button" class="link-btn session-delete' + (confirming ? " is-confirm" : "") + '" data-delete="' + Core.esc(x.id) + '"' + off +
+        ' aria-label="' + Core.esc((confirming ? "Delete for good: " : "Delete ") + x.title) + '">' + (confirming ? "Delete for good" : "Delete") + "</button></li>";
+    }).join(""));
+  }
+
+  function renderSaveState() {
+    let text = "", error = false;
+    if (canSave() && S.phase !== "idle") {
+      if (saved.error) { text = (S.sessionId ? "Couldn't save: " : "Not saved: ") + saved.error; error = true; }
+      else if (S.sessionId) text = saved.pending ? "Saving\u2026" : "Saved";
+    }
+    toggle(els.saveState, !!text);
+    setText(els.saveState, text);
+    els.saveState.classList.toggle("is-error", error);
+  }
+
+  /* ---------- Revisions ---------- */
+
+  function showReviseNote(text) {
+    els.reviseNote.textContent = text;
+    els.reviseNote.hidden = !text;
+  }
+
+  // The requester's questions and input on the plan go back up the chain: the builders revise their proposals with
+  // it, the council reviews them and votes again, and the Chair answers it in a revised plan. That's a new round of
+  // the same graph, handed the brief and a revision that carries the input and what it revises.
+  async function revise() {
+    if (S.phase !== "done" || S.connecting) return;
+    const input = els.reviseInput.value.trim();
+    if (!input) {
+      showReviseNote("Write your questions or input first.");
+      els.reviseInput.focus();
+      return;
+    }
+    const agents = currentAgents();
+    const problem = checkAgents(agents, brief().project, true, !!brief().review);
+    if (problem) {
+      showReviseNote(problem.message);
+      if (problem.openProviders) els.providers.open = true;
+      return;
+    }
+    showReviseNote("");
+    const revision = Core.nextRevision(Core.sessionOf(S.handoffs), input);
+    abortAll();
+    S.token += 1;
+    S.session += 1;
+    const tok = S.token;
+    S.past.push(S.handoffs);
+    S.round = revision.round;
+    S.handoffs = { brief: S.handoffs.brief, revision: Graph.handoff("revision", "revision", revision) };
+    resetSeats();
+    S.agents = agents;
+    S.phase = "running";
+    S.notice = null;
+    S.canRetry = false;
+    S.revealed = { proposals: true, questions: false, council: false, vote: false, review: false, plan: false };
+    S.sel = { proposals: "A", questions: "A", council: "advocate", review: "scaling" };
+    S.convenedAt = Date.now();
+    startClock();
+    els.reviseInput.value = "";
+    Core.HANDED_IN.forEach(k => saveHandoff(S.round, S.handoffs[k]));
+    saveState();
+    render();
+    scrollToSection(els.secProposals);
+    focusQuietly($("h-proposals"));
+    run(tok).catch(onRunCrash);
+  }
+
+  function renderRevise() {
+    toggle(els.revise, S.phase === "done");
+    els.reviseBtn.disabled = S.connecting;
+  }
+
+  function roundInput(h) {
+    return h && h.revision && h.revision.data ? h.revision.data.input : "";
+  }
+
+  function renderRounds() {
+    toggle(els.secRounds, S.past.length > 0 && S.phase !== "idle");
+    if (!S.past.length) return;
+    const key = S.session + ":" + S.past.length;
+    if (els.roundsList._key === key) return;
+    els.roundsList._key = key;
+    const all = S.past.concat([S.handoffs]);
+    const html = [];
+    for (let i = S.past.length - 1; i >= 0; i--) {
+      const s = Core.sessionOf(S.past[i]), t = s.tally, won = t ? t.winner || s.decided : null;
+      const titles = Core.titlesOf(s.proposals);
+      html.push('<details class="round"><summary>Round ' + (i + 1) + ": " + Core.esc(Core.titleOf(s.plan) || "The plan") +
+        (won ? '<span class="round-meta">Built on Proposal ' + won + (titles[won] ? ", \u201C" + Core.esc(titles[won]) + "\u201D" : "") + "</span>" : "") +
+        '</summary><div class="round-body"><article class="doc">' + Core.renderMarkdown(s.plan || "") + "</article>" +
+        '<p class="round-label">Your input on this plan</p><blockquote class="motion-quote">' + Core.esc(roundInput(all[i + 1])) + "</blockquote></div></details>");
+    }
+    els.roundsList.innerHTML = html.join("");
+  }
+
   /* ---------- Events ---------- */
 
   els.convene.addEventListener("click", () => {
@@ -1700,6 +2442,71 @@
     });
     $("check-" + p).addEventListener("click", () => checkConnection(p));
   });
+  els.reviseBtn.addEventListener("click", revise);
+  els.reviseInput.addEventListener("input", () => { if (!els.reviseNote.hidden) showReviseNote(""); });
+  els.reviseInput.addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      revise();
+    }
+  });
+  // Delete asks once more before it deletes.
+  els.sessionList.addEventListener("click", e => {
+    const btn = e.target.closest("button");
+    if (!btn || btn.disabled) return;
+    if (btn.hasAttribute("data-open")) {
+      saved.confirm = "";
+      openSession(btn.getAttribute("data-open"));
+    } else if (btn.hasAttribute("data-delete")) {
+      const id = btn.getAttribute("data-delete");
+      if (saved.confirm === id) {
+        saved.confirm = "";
+        deleteSession(id);
+      } else {
+        saved.confirm = id;
+        render();
+        const again = els.sessionList.querySelector('[data-delete="' + id + '"]');
+        if (again) again.focus();
+      }
+    }
+  });
+  els.projectPath.addEventListener("input", () => {
+    proj.note = "";
+    store.set("quorum:project", els.projectPath.value);
+    clearTimeout(projectTimer);
+    const text = els.projectPath.value.trim();
+    projectTimer = setTimeout(() => checkProject(text), 300);
+    render();
+  });
+  els.projectPath.addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      checkProject(els.projectPath.value.trim());
+    }
+  });
+  els.projectBrowse.addEventListener("click", () => {
+    proj.browsing = !proj.browsing;
+    if (proj.browsing && !proj.listing) {
+      getFolder(local.project || "").then(l => {
+        if (!proj.listing) proj.listing = l;
+        schedule();
+      }, e => {
+        proj.error = e.message;
+        schedule();
+      });
+    }
+    render();
+  });
+  // Choosing a folder in the browser makes it the project, and shows what's inside it.
+  els.projectDirs.addEventListener("click", e => {
+    const btn = e.target.closest("button[data-path]");
+    if (!btn || btn.disabled) return;
+    chooseProject(btn.getAttribute("data-path")).then(() => {
+      render();
+      const first = els.projectDirs.querySelector("button");
+      if (first && proj.browsing) first.focus();
+    });
+  });
   lengthInputs.forEach(inp => {
     inp.addEventListener("change", () => {
       store.set("quorum:length", currentLength());
@@ -1708,7 +2515,18 @@
   });
   wireTabs($("propTabs"), "proposals", LETTERS);
   wireTabs($("councilTabs"), "council", COUNCIL_IDS);
-  ALL_IDS.forEach(id => {
+  wireTabs($("reviewTabs"), "review", REVIEWER_IDS);
+  wireTabs($("questionTabs"), "questions", LETTERS, "qtab-");
+  els.questionsOn.addEventListener("change", () => {
+    store.set("quorum:questions", els.questionsOn.checked ? "on" : "off");
+    render();
+  });
+  els.reviewOn.addEventListener("change", () => {
+    store.set("quorum:review", els.reviewOn.checked ? "on" : "");
+    if (!els.agentsNote.hidden) showAgentsNote("");
+    render();
+  });
+  SEAT_IDS.forEach(id => {
     const g = seatEls[id];
     g.addEventListener("click", () => jumpToSeat(id));
     g.addEventListener("keydown", e => {
@@ -1728,7 +2546,7 @@
     });
   });
   els.copyPlan.addEventListener("click", async () => {
-    const plan = handedOff("chair");
+    const plan = planHandoff();
     if (!plan) return;
     const ok = await copyText(plan.text.trim() + "\n");
     flash(els.copyPlan, ok ? "Copied" : "Couldn't copy");
@@ -1766,9 +2584,11 @@
     }
   }
   applyAgents(Core.normalizeAgents(savedAgents, INSIDE));
+  fillDatalist("models-claude-code", Core.CLAUDE_CODE_MODELS);
   // On its own, open the providers panel until something is set up, and fetch OpenRouter's model list for the pickers.
+  let providersOpenedForSetup = false;
   if (!INSIDE) {
-    if (!EXTERNAL.some(providerReady)) els.providers.open = true;
+    if (!EXTERNAL.some(providerReady)) els.providers.open = providersOpenedForSetup = true;
     Providers.listModels("openrouter", credsSnapshot()).then(list => {
       if (!list.length) return;
       const seen = {};
@@ -1777,6 +2597,34 @@
       fillDatalist("models-openrouter", merged);
     }, () => { /* keep the presets */ });
   }
+  // With Quorum's local server, offer the project folder, and until other agents are chosen, put every seat on Claude Code.
+  localReady.then(info => {
+    local = info;
+    localState = info ? "ready" : "none";
+    setProviderOptions();
+    if (info) {
+      const start = info.project || store.get("quorum:project") || "";
+      els.projectPath.value = start;
+      if (start.trim()) checkProject(start.trim());
+      if (!savedAgents && info.claudeCode.available) {
+        const agents = {};
+        ROLES.forEach(r => { agents[r.id] = { provider: "claude-code", model: "" }; });
+        applyAgents(agents);
+        if (providersOpenedForSetup) els.providers.open = false;
+      }
+    }
+    render();
+    if (!canSave()) return;
+    // A session named in the address opens again; otherwise unfinished sessions are offered.
+    const m = /^#session=([\w-]+)$/.exec(location.hash);
+    refreshSessions().then(() => {
+      if (m) openSession(m[1]);
+      else if (S.phase === "idle" && saved.list.some(x => x.status !== "done")) els.sessions.open = true;
+      render();
+    });
+  });
+  els.reviewOn.checked = store.get("quorum:review") === "on";
+  els.questionsOn.checked = store.get("quorum:questions") !== "off";
   const savedLength = store.get("quorum:length");
   if (savedLength && LENGTHS[savedLength]) lengthInputs.forEach(i => { i.checked = i.value === savedLength; });
   autosize();

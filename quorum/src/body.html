@@ -1,0 +1,364 @@
+<body>
+<a class="skip" href="#feature">Skip to the feature</a>
+<div class="app">
+  <aside class="chamber" aria-label="Council chamber">
+    <div class="chamber-inner">
+      <div class="brand">
+        <p class="wordmark">Quorum</p>
+        <p class="tagline">Three builders propose. Three councilors vote. The Chair writes the plan.</p>
+      </div>
+      <div class="hemicycle">
+        <svg viewBox="0 0 320 222" role="group" aria-label="Seating chart: three councilors on the back bench, three builders on the front bench, the Chair on the floor" focusable="false">
+          <path class="bench" d="M36 176 A124 124 0 0 1 284 176"/>
+          <path class="bench" d="M92 176 A68 68 0 0 1 228 176"/>
+          <line class="floor" x1="20" y1="176" x2="300" y2="176"/>
+
+          <g class="seat" data-seat="advocate" role="button" tabindex="-1" aria-disabled="true">
+            <circle class="seat-ring" cx="52.6" cy="114" r="25"/>
+            <circle class="seat-disc" cx="52.6" cy="114" r="18"/>
+            <circle class="seat-fill" cx="52.6" cy="114" r="18"/>
+            <text class="seat-glyph" x="52.6" y="114" dy="0.35em"></text>
+          </g>
+          <text class="seat-label" x="40" y="82" aria-hidden="true">Advocate</text>
+
+          <g class="seat" data-seat="skeptic" role="button" tabindex="-1" aria-disabled="true">
+            <circle class="seat-ring" cx="160" cy="52" r="25"/>
+            <circle class="seat-disc" cx="160" cy="52" r="18"/>
+            <circle class="seat-fill" cx="160" cy="52" r="18"/>
+            <text class="seat-glyph" x="160" y="52" dy="0.35em"></text>
+          </g>
+          <text class="seat-label" x="160" y="20" aria-hidden="true">Skeptic</text>
+
+          <g class="seat" data-seat="strategist" role="button" tabindex="-1" aria-disabled="true">
+            <circle class="seat-ring" cx="267.4" cy="114" r="25"/>
+            <circle class="seat-disc" cx="267.4" cy="114" r="18"/>
+            <circle class="seat-fill" cx="267.4" cy="114" r="18"/>
+            <text class="seat-glyph" x="267.4" y="114" dy="0.35em"></text>
+          </g>
+          <text class="seat-label" x="280" y="82" aria-hidden="true">Strategist</text>
+
+          <g class="seat" data-seat="A" role="button" tabindex="-1" aria-disabled="true">
+            <circle class="seat-ring" cx="101.1" cy="142" r="24"/>
+            <circle class="seat-disc" cx="101.1" cy="142" r="17"/>
+            <circle class="seat-fill" cx="101.1" cy="142" r="17"/>
+            <text class="seat-glyph" x="101.1" y="142" dy="0.35em">A</text>
+          </g>
+
+          <g class="seat" data-seat="B" role="button" tabindex="-1" aria-disabled="true">
+            <circle class="seat-ring" cx="160" cy="108" r="24"/>
+            <circle class="seat-disc" cx="160" cy="108" r="17"/>
+            <circle class="seat-fill" cx="160" cy="108" r="17"/>
+            <text class="seat-glyph" x="160" y="108" dy="0.35em">B</text>
+          </g>
+
+          <g class="seat" data-seat="C" role="button" tabindex="-1" aria-disabled="true">
+            <circle class="seat-ring" cx="218.9" cy="142" r="24"/>
+            <circle class="seat-disc" cx="218.9" cy="142" r="17"/>
+            <circle class="seat-fill" cx="218.9" cy="142" r="17"/>
+            <text class="seat-glyph" x="218.9" y="142" dy="0.35em">C</text>
+          </g>
+
+          <g class="seat" data-seat="chair" role="button" tabindex="-1" aria-disabled="true">
+            <circle class="seat-ring" cx="160" cy="176" r="27"/>
+            <circle class="seat-disc" cx="160" cy="176" r="20"/>
+            <circle class="seat-fill" cx="160" cy="176" r="20"/>
+            <text class="seat-glyph" x="160" y="176" dy="0.35em"></text>
+          </g>
+          <text class="seat-label" x="160" y="216" aria-hidden="true">Chair</text>
+        </svg>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <ol class="stages" aria-label="Stages of the session">
+        <li><button type="button" class="stage-btn" data-stage="proposals" data-target="sec-proposals" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">1</span>Proposals</span><span class="stage-state">Waiting</span></button></li>
+        <li><button type="button" class="stage-btn" data-stage="council" data-target="sec-council" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">2</span>Council review</span><span class="stage-state">Waiting</span></button></li>
+        <li><button type="button" class="stage-btn" data-stage="vote" data-target="sec-vote" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">3</span>The vote</span><span class="stage-state">Waiting</span></button></li>
+        <li><button type="button" class="stage-btn" data-stage="plan" data-target="sec-plan" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">4</span>Final plan</span><span class="stage-state">Waiting</span></button></li>
+      </ol>
+      <div class="rail-foot">
+        <p class="clock" id="clock"></p>
+        <button type="button" class="btn btn-rail" id="railStop" hidden>Stop</button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="record" id="main">
+    <section class="motion" aria-labelledby="motion-title">
+      <h1 class="motion-title" id="motion-title">Put a feature before the council</h1>
+      <p class="lede">Describe a feature for an existing software project, then paste in whatever the council should work from, like product requirements, how the system works today, constraints or relevant code. Three builders propose implementations, the council votes, and the Chair writes the implementation plan.</p>
+      <label class="field-label" for="feature">The feature</label>
+      <textarea id="feature" class="feature" rows="3" maxlength="4000" placeholder="Let workspace owners invite teammates by email and choose whether each one can view or edit…" aria-describedby="featureNote"></textarea>
+      <p class="field-note" id="featureNote" hidden></p>
+      <p class="examples">Or start from an example: <a href="#feature" role="button" class="example" data-example="0"><span class="nowrap">two-factor</span> sign-in</a>, <a href="#feature" role="button" class="example" data-example="1">CSV export for reports</a>, or <a href="#feature" role="button" class="example" data-example="2">live comment notifications</a>.</p>
+      <p class="example-note" id="exampleNote" hidden>The example replaced your draft. <button type="button" class="link-btn" id="undoExample">Undo</button></p>
+
+      <div class="context" role="group" aria-labelledby="context-label" aria-describedby="contextHelp">
+        <div class="context-head">
+          <p class="field-label" id="context-label">Context</p>
+          <p class="context-count" id="contextCount"></p>
+        </div>
+        <p class="context-help" id="contextHelp">Paste anything the council should work from, as plain text, and give each piece a name the agents can refer to. Drafts are saved in this browser only.</p>
+        <div class="context-list" id="contextList"></div>
+        <div class="context-add" role="group" aria-label="Add context">
+          <button type="button" class="add-btn" data-kind="requirements"><span aria-hidden="true">+ </span>Product requirements</button>
+          <button type="button" class="add-btn" data-kind="today"><span aria-hidden="true">+ </span>How it works today</button>
+          <button type="button" class="add-btn" data-kind="constraints"><span aria-hidden="true">+ </span>Constraints</button>
+          <button type="button" class="add-btn" data-kind="code"><span aria-hidden="true">+ </span>Relevant code</button>
+          <button type="button" class="add-btn" data-kind="other"><span aria-hidden="true">+ </span>Something else</button>
+        </div>
+        <p class="field-note" id="contextNote" hidden></p>
+      </div>
+
+      <div class="controls">
+        <div class="settings" id="settings">
+          <p class="settings-title">Agents</p>
+          <div class="agent-row">
+            <span class="setting-label" aria-hidden="true">Builders</span>
+            <div class="agent-controls">
+              <label class="visually-hidden" for="provider-builders">Provider for the builders</label>
+              <select class="agent-provider" id="provider-builders" data-role="builders">
+                <option value="claude">Claude</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="hermes">Hermes Agent</option>
+                <option value="custom">Other endpoint</option>
+              </select>
+              <label class="visually-hidden" for="tier-builders">Claude model for the builders</label>
+              <select class="agent-tier" id="tier-builders" data-role="builders">
+                <option value="quick">Fast</option>
+                <option value="default">Balanced</option>
+                <option value="complex">Frontier</option>
+              </select>
+              <label class="visually-hidden" for="model-builders">Model for the builders</label>
+              <input class="agent-model" id="model-builders" data-role="builders" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+            </div>
+          </div>
+          <div class="agent-row">
+            <span class="setting-label" aria-hidden="true">Council</span>
+            <div class="agent-controls">
+              <label class="visually-hidden" for="provider-council">Provider for the council</label>
+              <select class="agent-provider" id="provider-council" data-role="council">
+                <option value="claude">Claude</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="hermes">Hermes Agent</option>
+                <option value="custom">Other endpoint</option>
+              </select>
+              <label class="visually-hidden" for="tier-council">Claude model for the council</label>
+              <select class="agent-tier" id="tier-council" data-role="council">
+                <option value="quick">Fast</option>
+                <option value="default">Balanced</option>
+                <option value="complex">Frontier</option>
+              </select>
+              <label class="visually-hidden" for="model-council">Model for the council</label>
+              <input class="agent-model" id="model-council" data-role="council" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+            </div>
+          </div>
+          <div class="agent-row">
+            <span class="setting-label" aria-hidden="true">Chair</span>
+            <div class="agent-controls">
+              <label class="visually-hidden" for="provider-chair">Provider for the Chair</label>
+              <select class="agent-provider" id="provider-chair" data-role="chair">
+                <option value="claude">Claude</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="hermes">Hermes Agent</option>
+                <option value="custom">Other endpoint</option>
+              </select>
+              <label class="visually-hidden" for="tier-chair">Claude model for the Chair</label>
+              <select class="agent-tier" id="tier-chair" data-role="chair">
+                <option value="quick">Fast</option>
+                <option value="default">Balanced</option>
+                <option value="complex">Frontier</option>
+              </select>
+              <label class="visually-hidden" for="model-chair">Model for the Chair</label>
+              <input class="agent-model" id="model-chair" data-role="chair" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+            </div>
+          </div>
+          <fieldset class="setting is-length">
+            <legend class="visually-hidden">Length of each document</legend>
+            <span class="setting-label" aria-hidden="true">Length</span>
+            <div class="seg">
+              <label><input type="radio" name="length" value="brief"><span>Brief</span></label>
+              <label><input type="radio" name="length" value="standard" checked><span>Standard</span></label>
+              <label><input type="radio" name="length" value="detailed"><span>Detailed</span></label>
+            </div>
+          </fieldset>
+          <p class="settings-hint" id="settingsHint"></p>
+          <p class="field-note" id="agentsNote" hidden></p>
+        </div>
+        <div class="actions">
+          <button type="button" class="btn btn-quiet" id="resume" hidden>Resume</button>
+          <button type="button" class="btn btn-primary" id="convene">Convene the council</button>
+        </div>
+      </div>
+      <p class="tier-note" id="tierNote" hidden></p>
+
+      <details class="providers" id="providers">
+        <summary><span class="providers-title">Providers</span><span class="providers-status" id="providersStatus"></span></summary>
+        <div class="providers-body">
+          <p class="providers-intro" id="providersIntro"></p>
+          <fieldset class="provider" id="set-openrouter">
+            <legend>OpenRouter</legend>
+            <div class="provider-fields">
+              <label class="provider-field"><span>API key</span><input type="password" id="key-openrouter" autocomplete="off" spellcheck="false" placeholder="sk-or-…"></label>
+            </div>
+            <label class="check"><input type="checkbox" id="remember-openrouter"> Remember on this device</label>
+            <p class="provider-help">Create a key at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">openrouter.ai/keys</a>. Requests are billed to your OpenRouter account, and the model fields suggest what OpenRouter offers.</p>
+          </fieldset>
+          <fieldset class="provider" id="set-hermes">
+            <legend>Hermes Agent</legend>
+            <div class="provider-fields">
+              <label class="provider-field"><span>Address</span><input type="url" id="url-hermes" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:8642/v1"></label>
+              <label class="provider-field"><span>API key</span><input type="password" id="key-hermes" autocomplete="off" spellcheck="false" placeholder="Your API_SERVER_KEY"></label>
+            </div>
+            <label class="check"><input type="checkbox" id="remember-hermes"> Remember on this device</label>
+            <div class="provider-actions">
+              <button type="button" class="btn btn-quiet btn-small" id="check-hermes">Check connection</button>
+              <p class="provider-status" id="status-hermes" role="status"></p>
+            </div>
+            <p class="provider-help" id="help-hermes"></p>
+          </fieldset>
+          <fieldset class="provider" id="set-custom">
+            <legend>Other OpenAI-compatible endpoint</legend>
+            <div class="provider-fields">
+              <label class="provider-field"><span>Address</span><input type="url" id="url-custom" autocomplete="off" spellcheck="false" placeholder="http://localhost:11434/v1"></label>
+              <label class="provider-field"><span>API key, if it needs one</span><input type="password" id="key-custom" autocomplete="off" spellcheck="false"></label>
+            </div>
+            <label class="check"><input type="checkbox" id="remember-custom"> Remember on this device</label>
+            <div class="provider-actions">
+              <button type="button" class="btn btn-quiet btn-small" id="check-custom">Check connection</button>
+              <p class="provider-status" id="status-custom" role="status"></p>
+            </div>
+            <p class="provider-help">Any service that speaks the OpenAI chat completions format, such as Ollama, LM Studio, vLLM or LiteLLM, as long as it accepts requests from this page.</p>
+          </fieldset>
+        </div>
+      </details>
+      <datalist id="models-openrouter"></datalist>
+      <datalist id="models-hermes"></datalist>
+      <datalist id="models-custom"></datalist>
+    </section>
+
+    <section class="roster" id="roster" aria-labelledby="roster-title">
+      <h2 class="roster-title" id="roster-title">Who sits in the chamber</h2>
+      <div class="roster-row">
+        <h3 class="roster-label">Builders</h3>
+        <ul class="roster-list">
+          <li data-letter="A"><span class="badge" aria-hidden="true">A</span><p><strong>The Pragmatist</strong> looks for the smallest change that fits the existing code, reusing what the project already has.</p></li>
+          <li data-letter="B"><span class="badge" aria-hidden="true">B</span><p><strong>The Visionary</strong> looks for a better design than the obvious one, while keeping it buildable.</p></li>
+          <li data-letter="C"><span class="badge" aria-hidden="true">C</span><p><strong>The Architect</strong> fits it to the system's structure, with a sound data model and clean interfaces.</p></li>
+        </ul>
+      </div>
+      <div class="roster-row">
+        <h3 class="roster-label">Council</h3>
+        <ul class="roster-list">
+          <li><span class="badge is-ring" aria-hidden="true"></span><p><strong>The Advocate</strong> speaks for the users and checks each proposal against the requirements.</p></li>
+          <li><span class="badge is-ring" aria-hidden="true"></span><p><strong>The Skeptic</strong> looks for what could break: regressions, security, performance and hidden complexity.</p></li>
+          <li><span class="badge is-ring" aria-hidden="true"></span><p><strong>The Strategist</strong> weighs effort and risk against the payoff, and how the work can ship in steps.</p></li>
+        </ul>
+      </div>
+      <div class="roster-row">
+        <h3 class="roster-label">Chair</h3>
+        <ul class="roster-list">
+          <li><span class="badge is-chair" aria-hidden="true"></span><p><strong>The Chair</strong> counts the ranked ballots and writes the implementation plan from the winning proposal, borrowing the best of the rest.</p></li>
+        </ul>
+      </div>
+      <p class="roster-foot">A session makes seven requests: three proposals, three reviews and the plan. Each role runs on the agent you choose, so the builders can draft on a fast, cheap model while the council and the Chair decide on a frontier one. Inside claude.ai the agents run on Claude; opened on its own, Quorum can use OpenRouter, Hermes Agent or another OpenAI-compatible service.</p>
+    </section>
+
+    <section class="stage-sec" id="sec-proposals" aria-labelledby="h-proposals" hidden>
+      <div class="sec-head">
+        <h2 class="sec-title" id="h-proposals" tabindex="-1"><span class="sec-num">1</span>Proposals</h2>
+        <p class="sec-note" id="propCount"></p>
+      </div>
+      <p class="motion-intro">The council is considering:</p>
+      <blockquote class="motion-quote" id="motionQuote"></blockquote>
+      <details class="motion-context" id="motionContext" hidden>
+        <summary id="motionContextSummary"></summary>
+        <div class="motion-context-body" id="motionContextBody"></div>
+      </details>
+      <div class="tabs" role="tablist" aria-label="Proposals" id="propTabs">
+        <button type="button" role="tab" class="tab" id="tab-A" data-key="A" data-letter="A" aria-controls="propPane" aria-selected="true">
+          <span class="tab-top"><span class="badge" aria-hidden="true">A</span><span class="tab-role">Pragmatist</span></span>
+          <span class="tab-title"></span>
+          <span class="tab-meta"></span>
+        </button>
+        <button type="button" role="tab" class="tab" id="tab-B" data-key="B" data-letter="B" aria-controls="propPane" aria-selected="false" tabindex="-1">
+          <span class="tab-top"><span class="badge" aria-hidden="true">B</span><span class="tab-role">Visionary</span></span>
+          <span class="tab-title"></span>
+          <span class="tab-meta"></span>
+        </button>
+        <button type="button" role="tab" class="tab" id="tab-C" data-key="C" data-letter="C" aria-controls="propPane" aria-selected="false" tabindex="-1">
+          <span class="tab-top"><span class="badge" aria-hidden="true">C</span><span class="tab-role">Architect</span></span>
+          <span class="tab-title"></span>
+          <span class="tab-meta"></span>
+        </button>
+      </div>
+      <div class="pane" role="tabpanel" id="propPane" aria-labelledby="tab-A" tabindex="0">
+        <p class="byline"><span id="propByline"></span><span class="tier" id="propTier" hidden></span></p>
+        <article class="doc" id="propDoc"></article>
+        <p class="pane-note" id="propNote" hidden></p>
+      </div>
+    </section>
+
+    <section class="stage-sec" id="sec-council" aria-labelledby="h-council" hidden>
+      <div class="sec-head">
+        <h2 class="sec-title" id="h-council" tabindex="-1"><span class="sec-num">2</span>Council review</h2>
+        <p class="sec-note" id="councilCount"></p>
+      </div>
+      <p class="sec-intro">Each councilor reads the three proposals without knowing who wrote them, each in a different order, then ranks all three.</p>
+      <div class="tabs" role="tablist" aria-label="Council reviews" id="councilTabs">
+        <button type="button" role="tab" class="tab" id="tab-advocate" data-key="advocate" aria-controls="councilPane" aria-selected="true">
+          <span class="tab-top"><span class="dot" aria-hidden="true"></span><span class="tab-role">Advocate</span></span>
+          <span class="tab-title"></span>
+          <span class="tab-meta"></span>
+        </button>
+        <button type="button" role="tab" class="tab" id="tab-skeptic" data-key="skeptic" aria-controls="councilPane" aria-selected="false" tabindex="-1">
+          <span class="tab-top"><span class="dot" aria-hidden="true"></span><span class="tab-role">Skeptic</span></span>
+          <span class="tab-title"></span>
+          <span class="tab-meta"></span>
+        </button>
+        <button type="button" role="tab" class="tab" id="tab-strategist" data-key="strategist" aria-controls="councilPane" aria-selected="false" tabindex="-1">
+          <span class="tab-top"><span class="dot" aria-hidden="true"></span><span class="tab-role">Strategist</span></span>
+          <span class="tab-title"></span>
+          <span class="tab-meta"></span>
+        </button>
+      </div>
+      <div class="pane" role="tabpanel" id="councilPane" aria-labelledby="tab-advocate" tabindex="0">
+        <p class="byline"><span id="councilByline"></span><span class="tier" id="councilTier" hidden></span></p>
+        <article class="doc" id="councilDoc"></article>
+        <div id="ballot"></div>
+        <p class="pane-note" id="councilNote" hidden></p>
+      </div>
+    </section>
+
+    <section class="stage-sec" id="sec-vote" aria-labelledby="h-vote" hidden>
+      <div class="sec-head">
+        <h2 class="sec-title" id="h-vote" tabindex="-1"><span class="sec-num">3</span>The vote</h2>
+      </div>
+      <p class="sec-intro">A first-place ranking earns 3 points, second place 2 and third place 1. A tie goes to first-place votes, then to combined scores, then to the Chair.</p>
+      <div class="division-wrap" id="division"></div>
+      <p class="verdict" id="verdict"></p>
+    </section>
+
+    <section class="stage-sec" id="sec-plan" aria-labelledby="h-plan" hidden>
+      <div class="sec-head">
+        <h2 class="sec-title" id="h-plan" tabindex="-1"><span class="sec-num">4</span>Final plan</h2>
+      </div>
+      <div class="plan" id="plan">
+        <p class="byline"><span id="planByline"></span><span class="tier" id="planTier" hidden></span></p>
+        <article class="doc" id="planDoc"></article>
+        <p class="pane-note" id="planNote" hidden></p>
+        <div class="plan-actions" id="planActions" hidden>
+          <button type="button" class="btn btn-primary" id="copyPlan">Copy plan</button>
+          <button type="button" class="btn btn-quiet" id="dlPlan" hidden>Download plan</button>
+          <button type="button" class="btn btn-quiet" id="dlRecord" hidden>Download full record</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="notice" id="notice" role="alert" hidden>
+  <p id="noticeText"></p>
+  <div class="notice-actions">
+    <button type="button" class="btn btn-on-ink" id="noticeRetry">Retry</button>
+    <button type="button" class="btn btn-ghost-ink" id="noticeDismiss">Dismiss</button>
+  </div>
+</div>

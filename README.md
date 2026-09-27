@@ -4,16 +4,42 @@ Decide how to implement a feature in an existing software project by putting it 
 
 Each role can run on a different provider and model: Claude inside claude.ai, and OpenRouter, Hermes Agent or any OpenAI-compatible endpoint when you run Quorum yourself.
 
+![Quorum in session: the seating chart on the left shows who is working, and the builders' proposals stream in side by side](docs/screenshots/proposals.png)
+
 ## How a session works
 
-You describe the feature and paste in whatever context the council should work from, as plain text: product requirements, how the system works today, constraints, relevant code or anything else. Each piece gets a name, and every agent sees all of it. The agents are told to use names that appear in the context and to state assumptions rather than invent file names, endpoints or libraries. Context is limited to 24,000 characters so that every request, which carries the context along with the proposals and reviews, stays a manageable size.
+You describe the feature and paste in whatever context the council should work from, as plain text: product requirements, how the system works today, constraints, relevant code or anything else. You can also drop text files onto the context, or add them with "From files…", and each comes in named after its file. Each piece gets a name, and every agent sees all of it. The agents are told to use names that appear in the context and to state assumptions rather than invent file names, endpoints or libraries. Context is limited to 24,000 characters so that every request, which carries the context along with the proposals and reviews, stays a manageable size.
 
 1. **Proposals.** Three builders write in parallel, each with a different approach: the Pragmatist looks for the smallest change that fits the existing code, the Visionary for a better design than the obvious one, and the Architect for something that fits the system's structure and holds up as it grows.
 2. **Council review.** The Advocate (users and requirements), the Skeptic (regressions, security, performance and hidden complexity) and the Strategist (effort, risk and sequencing) each review all three proposals without knowing who wrote them, each reading them in a different order. Every review ends with a ranked ballot and a score from 1 to 10 for each proposal.
 3. **The vote.** A first-place ranking earns 3 points, second place 2 and third place 1. A tie goes to first-place votes, then to combined scores, then to the Chair.
 4. **Implementation plan.** The Chair writes the plan from the winning proposal, covering requirements, design, changes by area, implementation steps, testing, rollout, risks and open questions. It folds in the best ideas from the other proposals and answers any councilor who ranked the winner last.
 
-A session makes seven requests. The finished plan can be copied or downloaded, along with a full record of the request, the context, every proposal and review, the vote and which model each seat ran on.
+A session makes seven requests. The finished plan can be copied or downloaded, along with a full record of the request, the context, every proposal and review, the vote and which model each seat ran on. The page keeps your last session in the browser, so reloading it brings the session back, and a session that hadn't finished can be resumed where it stopped.
+
+## What a session looks like
+
+These screenshots follow the "CSV export for reports" example on the page, with the default OpenRouter setup. They were recorded by `npm run screenshots`, which plays a scripted session through the real page, so the agents' words were written for the demo rather than by the models named on them, and the session timer is moved forward the way minutes would pass in a real session.
+
+**Putting a feature before the council.** The feature, and the context the council works from.
+
+![The feature request and two pieces of context filled in from the CSV export example](docs/screenshots/convene.png)
+
+**Council review.** Each councilor reviews the proposals blind, through their own lens, and ends with a ranked ballot. The seating chart shows each councilor's first choice.
+
+![The Skeptic's review, ranking Proposal A first, while the Chair waits to write the plan](docs/screenshots/council.png)
+
+**The vote.** The ballots are counted. Here A and B tie on points, and B wins on first-place votes.
+
+![The vote table: B and A tie at 7 points, and B is adopted on first-place votes](docs/screenshots/vote.png)
+
+**The plan.** The Chair writes the implementation plan from the winner, folds in ideas from the other proposals, and answers the councilor who ranked the winner last.
+
+![The Chair's implementation plan, built on Proposal B](docs/screenshots/plan.png)
+
+The page follows your system's light or dark setting.
+
+![The vote in dark mode](docs/screenshots/vote-dark.png)
 
 ## Agents and providers
 
@@ -78,6 +104,8 @@ Build `dist/quorum.html` and ask Claude to publish that file as an artifact with
 | `serve.js` | Serves `dist/` at http://localhost:8765 for `npm start` |
 | `dist/quorum.html` | The built single-file page |
 | `test/` | Unit tests for `core.js`, and in-page tests that stand in a simulated Claude and simulated OpenRouter, Hermes Agent and custom endpoints |
+| `scripts/screenshots.js` | Records the screenshots in `docs/screenshots/` by driving the built page in Chromium with a scripted OpenRouter |
+| `scripts/scripted-session.js` | What each seat answers in that scripted session |
 
 ### The session graph
 
@@ -95,6 +123,8 @@ A session is declared up front, as `SESSION` in `src/core.js`, as a directed acy
 
 If a step fails, nothing that needs it starts. A retry runs the graph again from the handoffs already made, so only the unfinished steps are asked again.
 
+The same holds across a reload. The page keeps the brief and what each agent wrote in the browser, and rebuilds the handoffs from them by running each step's `result` again, so a saved answer is checked the same way a fresh one is. A step whose answer no longer reads, and every step after it, simply runs again when the session is resumed.
+
 ## Build and test
 
 Requires Node.js 18 or later.
@@ -104,4 +134,11 @@ npm install
 npm start       # builds, then serves the page at http://localhost:8765
 npm run build   # writes dist/quorum.html only
 npm test        # rebuilds, then runs the unit and in-page tests
+```
+
+To record the screenshots again after changing the page, install Playwright and Chromium, which aren't among the project's dependencies, then run the script:
+
+```sh
+npm install --no-save playwright && npx playwright install chromium
+npm run screenshots
 ```

@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const read = file => fs.readFileSync(path.join(__dirname, "src", file), "utf8");
-const scripts = ["core.js", "providers.js", "app.js"].map(read);
+const scripts = ["graph.js", "core.js", "providers.js", "app.js"].map(read);
 if (scripts.some(js => /<\/script/i.test(js))) {
   console.error("A closing script tag inside the JavaScript would end the inline script early.");
   process.exit(1);

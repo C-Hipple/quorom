@@ -294,6 +294,7 @@ const chats = h => h.requests.filter(r => r.method === "POST");
     assert.deepStrictEqual(JSON.parse(win.localStorage.getItem("quorum:providers")).urls, { hermes: "", custom: "http://localhost:11434/v1/" });
     await convene(h);
     await waitFor(() => win.__quorum.S.phase === "done", 10000, "done");
+    await sleep(30);
     assert.ok(chats(h).every(r => r.url === "http://localhost:11434/v1/chat/completions" && r.body.model === "llama3.1:8b"));
     assert.strictEqual(txt(doc.getElementById("planTier")), "Agent: llama3.1:8b via localhost:11434");
     doc.getElementById("remember-custom").click();

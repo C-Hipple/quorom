@@ -302,6 +302,31 @@ async function convene(h, feature = "Let users export reports as CSV.") {
     assert.strictEqual(h.calls.length, 8);
   });
 
+  await run("steps hand on frozen copies, and a retry builds on them", async () => {
+    const h = makeHarness({ plan: { skeptic: "upstream_error" } });
+    const { doc, win } = h;
+    await convene(h);
+    await waitFor(() => win.__quorum.S.phase === "paused", 8000, "paused");
+    const S = win.__quorum.S;
+    assert.deepStrictEqual(Object.keys(S.handoffs).sort(), ["A", "B", "C", "advocate", "brief", "strategist"]);
+    const A = S.handoffs.A, advocate = S.handoffs.advocate;
+    assert.ok(Object.isFrozen(A) && Object.isFrozen(A.data) && Object.isFrozen(advocate.data.ballot.ranking));
+    assert.strictEqual(A.data.title, "Shelf Share");
+    assert.deepStrictEqual({ ...A.data.agent }, { provider: "claude", model: "quick" });
+    A.data.text = "changed";
+    assert.ok(A.data.text.startsWith("# Shelf Share"), "a handoff can't be changed");
+    // Workers read only their handoffs, so what the page holds for a seat can't leak into another's prompt.
+    S.seats.A.text = "# Tampered";
+    doc.getElementById("resume").click();
+    await waitFor(() => S.phase === "done", 8000, "done after retry");
+    assert.strictEqual(S.handoffs.A, A, "finished handoffs are kept, not remade");
+    assert.strictEqual(S.handoffs.advocate, advocate);
+    const retried = h.calls.filter(c => c.id === "skeptic")[1].prompt;
+    assert.ok(retried.includes("=== Proposal A ===\n# Shelf Share"));
+    assert.ok(!h.calls.some(c => c.prompt.includes("Tampered")));
+    assert.strictEqual(S.handoffs.tally.data.winner, "B");
+  });
+
   await run("unreadable ballot pauses with bad_ballot", async () => {
     const h = makeHarness({ plan: { strategist: "no_ballot" } });
     const { doc, win } = h;
@@ -356,7 +381,7 @@ async function convene(h, feature = "Let users export reports as CSV.") {
     });
     const { doc, win } = h;
     await convene(h);
-    await waitFor(() => win.__quorum.S.tally, 8000, "tally");
+    await waitFor(() => win.__quorum.S.handoffs.tally, 8000, "tally");
     await sleep(30);
     assert.strictEqual(txt(doc.getElementById("verdict")), "All three proposals are tied on points, first-place votes and combined scores. The Chair will cast the deciding vote.");
     assert.strictEqual(doc.querySelectorAll("#division .tag.is-tied").length, 3);
@@ -364,7 +389,7 @@ async function convene(h, feature = "Let users export reports as CSV.") {
     assert.ok(h.calls.find(c => c.id === "chair").prompt.includes("I cast the deciding vote for Proposal X."));
     await waitFor(() => win.__quorum.S.phase === "done", 8000, "done");
     await sleep(40);
-    assert.strictEqual(win.__quorum.S.decided, "C");
+    assert.strictEqual(win.__quorum.S.handoffs.chair.data.decided, "C");
     assert.strictEqual(txt(doc.getElementById("verdict")), "The council was deadlocked, so the Chair cast the deciding vote for Proposal C, “Tool Commons”.");
     assert.deepStrictEqual([...doc.querySelectorAll("#division tbody tr")].map(r => r.getAttribute("data-letter")), ["C", "A", "B"]);
     assert.strictEqual(txt(doc.querySelector("#tab-C .tab-meta")), "Adopted with 6 points");

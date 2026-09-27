@@ -1,4 +1,4 @@
-const Core = (function () {
+const Core = (function (Graph) {
   "use strict";
 
   /* ---------- The cast ---------- */
@@ -310,10 +310,15 @@ const Core = (function () {
     return listAnd(names.map((n, i) => (i === 0 ? n : midName(n))));
   }
 
-  function nameOf(id) {
+  function castOf(id) {
     const all = BUILDERS.concat(COUNCIL, [CHAIR]);
-    for (let i = 0; i < all.length; i++) if (all[i].id === id) return all[i].name;
-    return id;
+    for (let i = 0; i < all.length; i++) if (all[i].id === id) return all[i];
+    return null;
+  }
+
+  function nameOf(id) {
+    const c = castOf(id);
+    return c ? c.name : id;
   }
 
   /* ---------- Markdown (escape first, then format) ---------- */
@@ -982,6 +987,80 @@ const Core = (function () {
     return p;
   }
 
+  /* ---------- The session graph ---------- */
+
+  // A session is declared up front as a graph. Each step reads only the handoffs of the steps it needs, and hands
+  // on its own result, frozen, to the steps after it. What each kind of handoff carries:
+  //   brief     { feature, context: [{ title, text }], length }, handed in when the council convenes
+  //   proposal  { text, title }, from a builder
+  //   review    { text, ballot: { ranking, scores } }, from a councilor
+  //   tally     the count from computeTally
+  //   plan      { text, decided }, from the Chair; decided is the letter it chose in a deadlock, otherwise null
+  // Handoffs written by an agent also carry { truncated, agent: { provider, model }, served }.
+  const COUNCIL_IDS = COUNCIL.map(c => c.id);
+  const SESSION = Graph.define([{ id: "brief", kind: "brief" }].concat(
+    BUILDERS.map(b => ({ id: b.id, kind: "proposal", needs: ["brief"] })),
+    COUNCIL.map(c => ({ id: c.id, kind: "review", needs: ["brief"].concat(LETTERS) })),
+    [
+      { id: "tally", kind: "tally", needs: COUNCIL_IDS },
+      { id: "chair", kind: "plan", needs: ["brief"].concat(LETTERS, COUNCIL_IDS, ["tally"]) },
+    ]));
+
+  // The handoffs gathered back into the shape the prompts and the written record read.
+  function sessionOf(h) {
+    const data = id => (h[id] ? h[id].data : null);
+    const proposals = {}, reviews = {}, ballots = {};
+    LETTERS.forEach(L => { proposals[L] = data(L) ? data(L).text : ""; });
+    COUNCIL_IDS.forEach(id => {
+      reviews[id] = data(id) ? data(id).text : "";
+      ballots[id] = data(id) ? data(id).ballot : null;
+    });
+    return {
+      brief: data("brief"), proposals, reviews, ballots, tally: data("tally"),
+      plan: data("chair") ? data("chair").text : "", decided: data("chair") ? data("chair").decided : null,
+    };
+  }
+
+  function wordsFor(brief) {
+    return (LENGTHS[brief.length] || LENGTHS.standard).words;
+  }
+
+  // How each kind of step works. An agent step builds its prompt from its task's inputs and turns the agent's answer
+  // into the data it hands on, throwing { code } if the answer can't be used. A counted step works its data out itself.
+  const STEPS = {
+    proposal: {
+      prompt(task, opts) {
+        const brief = task.inputs.brief.data;
+        return fitPrompt((n, c) => builderPrompt(castOf(task.node), brief, wordsFor(brief).builder, c, opts));
+      },
+      result: (task, text) => ({ text, title: titleOf(text) }),
+    },
+    review: {
+      prompt(task, opts) {
+        const s = sessionOf(task.inputs);
+        return fitPrompt((n, c) => councilPrompt(castOf(task.node), s.brief, s.proposals, wordsFor(s.brief).review, n, c, opts));
+      },
+      result(task, text) {
+        const ballot = extractBallot(text);
+        if (!ballot) throw { code: "bad_ballot", message: "The review ends without a readable ballot.", text };
+        return { text, ballot };
+      },
+    },
+    tally: {
+      compute: task => computeTally(sessionOf(task.inputs).ballots),
+    },
+    plan: {
+      prompt(task, opts) {
+        const s = sessionOf(task.inputs);
+        return fitPrompt((n, c) => chairPrompt(s, wordsFor(s.brief).plan, n, c, opts));
+      },
+      result(task, text) {
+        const t = task.inputs.tally.data;
+        return { text, decided: t.decidedBy === "chair" ? parseDecidingVote(text, t.tied) : null };
+      },
+    },
+  };
+
   /* ---------- The written record ---------- */
 
   function stripTitle(text) {
@@ -1053,6 +1132,7 @@ const Core = (function () {
     renderMarkdown, inline, reviewBody, tolerantJSON, normalizeBallot, extractBallot, ballotLine,
     computeTally, orderRows, dissenters, parseDecidingVote, verdictText,
     contextBlocks, contextSection, builderPrompt, councilPrompt, chairPrompt, fitPrompt,
+    SESSION, STEPS, sessionOf,
     stripTitle, shiftHeadings, fenceFor, recordMarkdown,
   };
-})();
+})(Graph);

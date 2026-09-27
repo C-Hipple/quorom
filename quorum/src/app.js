@@ -1,4 +1,4 @@
-(function (Core) {
+(function (Core, Graph) {
   "use strict";
 
   const LETTERS = Core.LETTERS, BUILDERS = Core.BUILDERS, COUNCIL = Core.COUNCIL, CHAIR = Core.CHAIR;
@@ -157,12 +157,9 @@
     phase: "idle", // idle | running | paused | stopped | blocked | done
     token: 0,
     session: 0,
-    brief: { feature: "", context: [] },
+    handoffs: {}, // node id to frozen handoff, for each step of the session that has finished
     agents: Core.normalizeAgents(null, INSIDE),
-    length: "standard",
     seats: {},
-    tally: null,
-    decided: null,
     revealed: { proposals: false, council: false, vote: false, plan: false },
     sel: { proposals: "A", council: "advocate" },
     clock: { startedAt: 0, accumulated: 0 },
@@ -180,7 +177,7 @@
   let clockTimer = 0;
 
   function freshSeat() {
-    return { status: "idle", text: "", error: null, truncated: false, ballot: null, ctl: null, agent: null, served: "", activity: "" };
+    return { status: "idle", text: "", error: null, truncated: false, ctl: null, agent: null, served: "", activity: "" };
   }
   function resetSeats() {
     ALL_IDS.forEach(id => { S.seats[id] = freshSeat(); });
@@ -273,8 +270,26 @@
   function currentTitles() {
     return Core.titlesOf(proposalsMap());
   }
+  // Finished results are read from the handoffs; seats only track each agent's progress and streamed words.
+  const NO_BRIEF = { feature: "", context: [], length: "standard" };
+  function handedOff(id) {
+    return S.handoffs[id] ? S.handoffs[id].data : null;
+  }
+  function brief() {
+    return handedOff("brief") || NO_BRIEF;
+  }
+  function tally() {
+    return handedOff("tally");
+  }
+  function decided() {
+    return handedOff("chair") ? handedOff("chair").decided : null;
+  }
+  function ballotOf(id) {
+    return handedOff(id) ? handedOff(id).ballot : null;
+  }
   function winnerLetter() {
-    return S.tally ? (S.tally.winner || S.decided || null) : null;
+    const t = tally();
+    return t ? (t.winner || decided() || null) : null;
   }
   function failedIds() {
     return ALL_IDS.filter(id => S.seats[id].status === "error");
@@ -321,12 +336,9 @@
     const tok = S.token;
     resetSeats();
     S.phase = "running";
-    S.brief = { feature, context: contextForSession() };
+    S.handoffs = { brief: Graph.handoff("brief", "brief", { feature, context: contextForSession(), length: currentLength() }) };
     dropUndo();
     S.agents = agents;
-    S.length = currentLength();
-    S.tally = null;
-    S.decided = null;
     S.notice = null;
     S.canRetry = false;
     S.revealed = { proposals: true, council: false, vote: false, plan: false };
@@ -339,66 +351,59 @@
     run(tok).catch(onRunCrash);
   }
 
+  // Runs the session graph on from the handoffs already made, so a retry or resume redoes only what's missing.
   async function run(tok) {
-    await runStage(LETTERS, tok);
-    if (tok !== S.token || !settle(LETTERS)) return;
-
-    S.revealed.council = true;
-    schedule();
-    await runStage(COUNCIL_IDS, tok);
-    if (tok !== S.token || !settle(COUNCIL_IDS)) return;
-
-    const ballots = {};
-    COUNCIL_IDS.forEach(id => { ballots[id] = S.seats[id].ballot; });
-    S.tally = Core.computeTally(ballots);
-    S.revealed.vote = true;
-    S.revealed.plan = true;
-    schedule();
-
-    await runStage(["chair"], tok);
-    if (tok !== S.token || !settle(["chair"])) return;
-    if (S.tally.decidedBy === "chair") S.decided = Core.parseDecidingVote(S.seats.chair.text, S.tally.tied);
+    const res = await Graph.run(Core.SESSION, {
+      done: S.handoffs,
+      work: task => work(task, tok),
+      live: () => tok === S.token,
+      onHandoff: h => {
+        if (tok !== S.token) return;
+        S.handoffs[h.from] = h;
+        if (S.seats[h.from]) S.seats[h.from].status = "done";
+        if (h.kind === "tally") S.revealed.vote = true;
+        schedule();
+      },
+    });
+    if (tok !== S.token) return;
+    const failed = Core.SESSION.order.filter(id => id in res.failed);
+    const broken = failed.filter(id => !S.seats[id])[0];
+    if (broken) throw res.failed[broken];
+    if (failed.length) return settle(failed);
     S.phase = "done";
     pauseClock();
     schedule();
   }
 
-  function runStage(ids, tok) {
-    return Promise.all(ids.filter(id => S.seats[id].status !== "done").map(id => runSeat(id, tok)));
+  function work(task, tok) {
+    const step = Core.STEPS[task.kind];
+    if (!step) throw new Error("No worker handles " + task.kind + " steps.");
+    return step.compute ? step.compute(task) : askAgent(task, step, tok);
   }
 
-  function buildPrompt(id) {
-    const words = LENGTHS[S.length].words;
-    // Hermes Agent has tools and may be able to read the project; the others only see the prompt.
-    const opts = { explore: !!PROVIDERS[S.agents[Core.roleOf(id)].provider].agentic };
-    if (isBuilder(id)) return Core.fitPrompt((n, c) => Core.builderPrompt(CAST[id], S.brief, words.builder, c, opts));
-    if (isCouncil(id)) {
-      const props = proposalsMap();
-      return Core.fitPrompt((n, c) => Core.councilPrompt(CAST[id], S.brief, props, words.review, n, c, opts));
-    }
-    const reviews = {}, ballots = {};
-    COUNCIL_IDS.forEach(c => { reviews[c] = S.seats[c].text; ballots[c] = S.seats[c].ballot; });
-    const snap = { brief: S.brief, proposals: proposalsMap(), reviews, ballots, tally: S.tally };
-    return Core.fitPrompt((n, c) => Core.chairPrompt(snap, words.plan, n, c, opts));
+  function sectionOf(id) {
+    return isBuilder(id) ? "proposals" : isCouncil(id) ? "council" : "plan";
   }
 
-  async function runSeat(id, tok) {
-    const seat = S.seats[id];
+  // An agent step: the seat's agent writes from the task's inputs alone, and the seat shows it writing.
+  async function askAgent(task, step, tok) {
+    const id = task.node, seat = S.seats[id];
     const ctl = new AbortController();
     seat.status = "thinking";
     seat.text = "";
     seat.error = null;
     seat.truncated = false;
-    seat.ballot = null;
     seat.ctl = ctl;
     const agent = S.agents[Core.roleOf(id)];
     seat.agent = agent;
     seat.served = "";
     seat.activity = "";
+    S.revealed[sectionOf(id)] = true;
     schedule();
     const live = () => tok === S.token && seat.ctl === ctl;
     try {
-      const prompt = buildPrompt(id);
+      // Hermes Agent has tools and may be able to read the project; the others only see the prompt.
+      const prompt = step.prompt(task, { explore: !!PROVIDERS[agent.provider].agentic });
       if (agent.provider === "claude" && Core.utf8Len(prompt) > 64000) throw { code: "prompt_too_large", message: "Prompt over the size limit." };
       const res = await Providers.run(agent, prompt, {
         sample: sampleFn,
@@ -417,48 +422,43 @@
           schedule();
         },
       });
-      if (!live()) return;
+      if (!live()) throw { code: "cancelled", message: "Stopped." };
       seat.text = String((res && res.text) || seat.text);
       seat.truncated = !!(res && res.truncated);
       seat.served = (res && res.served) || agent.model;
-      if (isCouncil(id)) {
-        const ballot = Core.extractBallot(seat.text);
-        if (ballot) {
-          seat.ballot = ballot;
-          seat.status = "done";
-        } else {
-          seat.status = "error";
-          seat.error = { code: "bad_ballot" };
-        }
-      } else {
-        seat.status = "done";
-      }
+      return Object.assign(step.result(task, seat.text), {
+        truncated: seat.truncated,
+        agent: { provider: agent.provider, model: agent.model },
+        served: seat.served,
+      });
     } catch (e) {
-      if (!live()) return;
-      const code = e && typeof e.code === "string" ? e.code : "upstream_error";
-      if (code === "cancelled") {
-        seat.status = "stopped";
-      } else {
-        seat.status = "error";
-        seat.error = { code: ERRORS[code] ? code : "upstream_error", message: e && typeof e.message === "string" ? e.message : "" };
-        if (code === "refused") seat.text = "";
-        else if (e && typeof e.text === "string") seat.text = e.text;
-        if (errInfo(code).kind === "fatal" && ERRORS[code]) {
-          sampleState = "blocked";
-          S.blockedCode = code;
-        }
-      }
-      if (!(e && typeof e.code === "string")) console.error(e);
+      if (live()) failSeat(seat, e);
+      throw e;
     } finally {
       if (seat.ctl === ctl) seat.ctl = null;
       schedule();
     }
   }
 
-  // After a stage: go on if every seat finished, otherwise pause and say why.
-  function settle(ids) {
-    const failed = ids.filter(id => S.seats[id].status !== "done");
-    if (!failed.length) return true;
+  function failSeat(seat, e) {
+    const code = e && typeof e.code === "string" ? e.code : "upstream_error";
+    if (code === "cancelled") {
+      seat.status = "stopped";
+    } else {
+      seat.status = "error";
+      seat.error = { code: ERRORS[code] ? code : "upstream_error", message: e && typeof e.message === "string" ? e.message : "" };
+      if (code === "refused") seat.text = "";
+      else if (e && typeof e.text === "string") seat.text = e.text;
+      if (errInfo(code).kind === "fatal" && ERRORS[code]) {
+        sampleState = "blocked";
+        S.blockedCode = code;
+      }
+    }
+    if (!(e && typeof e.code === "string")) console.error(e);
+  }
+
+  // When seats couldn't finish: pause, and say why.
+  function settle(failed) {
     const RANK = { fatal: 3, stop: 2, retry: 1 };
     let worst = null;
     failed.forEach(id => {
@@ -473,7 +473,6 @@
     S.canRetry = info.kind === "retry";
     pauseClock();
     schedule();
-    return false;
   }
 
   function abortAll() {
@@ -889,7 +888,7 @@
     switch (s.status) {
       case "thinking": return "thinking";
       case "writing": return "writing";
-      case "done": return isCouncil(id) ? "ranked " + s.ballot.ranking[0] + " first" : isBuilder(id) ? "proposal ready" : "plan written";
+      case "done": return isCouncil(id) ? "ranked " + ballotOf(id).ranking[0] + " first" : isBuilder(id) ? "proposal ready" : "plan written";
       case "error": return "couldn't finish";
       case "stopped": return "stopped";
       default: return "waiting";
@@ -907,7 +906,7 @@
         letter = id;
         glyph = id;
       } else if (isCouncil(id)) {
-        if (s.ballot) { letter = s.ballot.ranking[0]; glyph = letter; }
+        if (ballotOf(id)) { letter = ballotOf(id).ranking[0]; glyph = letter; }
       } else if (w && (st === "writing" || st === "done")) {
         letter = w;
         if (st === "done") glyph = w;
@@ -976,7 +975,7 @@
     const states = {
       proposals: S.revealed.proposals ? stageState(LETTERS) : "waiting",
       council: S.revealed.council ? stageState(COUNCIL_IDS) : "waiting",
-      vote: S.tally ? (S.tally.decidedBy === "chair" && !S.decided ? "tied" : "done") : "waiting",
+      vote: tally() ? (tally().decidedBy === "chair" && !decided() ? "tied" : "done") : "waiting",
       plan: S.revealed.plan ? stageState(["chair"]) : "waiting",
     };
     stageBtns.forEach(btn => {
@@ -997,10 +996,10 @@
     toggle(els.secCouncil, S.revealed.council);
     toggle(els.secVote, S.revealed.vote);
     toggle(els.secPlan, S.revealed.plan);
-    setText(els.motionQuote, S.brief.feature);
+    setText(els.motionQuote, brief().feature);
     if (els.motionContextBody._session !== S.session) {
       els.motionContextBody._session = S.session;
-      const blocks = Core.contextBlocks(S.brief.context);
+      const blocks = Core.contextBlocks(brief().context);
       toggle(els.motionContext, blocks.length > 0);
       els.motionContext.open = false;
       setText(els.motionContextSummary, blocks.length ?
@@ -1140,7 +1139,7 @@
     if (s.status === "error") return "Couldn't finish";
     if (s.status === "stopped") return s.text ? "Stopped part-way" : "";
     if (s.status !== "done") return "";
-    const t = S.tally;
+    const t = tally();
     if (!t) return Core.wordCount(s.text) + " words";
     const pts = t.rows[id].points, w = winnerLetter();
     const p = pts + (pts === 1 ? " point" : " points");
@@ -1191,7 +1190,7 @@
   }
 
   function ballotHTML(id, titles) {
-    const b = S.seats[id].ballot;
+    const b = ballotOf(id);
     const rank = {};
     b.ranking.forEach((L, k) => { rank[L] = k + 1; });
     const rows = LETTERS.map(L => {
@@ -1213,7 +1212,7 @@
     COUNCIL.forEach(c => {
       const tab = $("tab-" + c.id), s = S.seats[c.id];
       renderTab(tab, S.sel.council === c.id, s.status);
-      const first = s.ballot ? s.ballot.ranking[0] : "";
+      const first = ballotOf(c.id) ? ballotOf(c.id).ranking[0] : "";
       setLetter(tab, first);
       setText(tab.querySelector(".tab-title"), first ? "Ranks " + first + " first" : statusTitle(c.id));
       const meta = first ? (titles[first] ? "\u201C" + titles[first] + "\u201D" : "") :
@@ -1228,18 +1227,19 @@
     setText(els.councilByline, "Review by " + Core.midName(CAST[id].name));
     renderTier(els.councilTier, id);
     renderDoc(els.councilDoc, id, Core.reviewBody(s.text), s.status, placeholderFor(id));
-    setHTML(els.ballot, s.ballot ? ballotHTML(id, titles) : "");
+    setHTML(els.ballot, ballotOf(id) ? ballotHTML(id, titles) : "");
     renderNote(els.councilNote, noteFor(id));
   }
 
   function renderVote() {
-    if (!S.tally) {
+    const t = tally();
+    if (!t) {
       setHTML(els.division, "");
       setText(els.verdict, "");
       return;
     }
-    const t = S.tally, titles = currentTitles(), w = winnerLetter();
-    const pending = t.decidedBy === "chair" && !S.decided;
+    const titles = currentTitles(), w = winnerLetter();
+    const pending = t.decidedBy === "chair" && !decided();
     const head = '<tr role="row"><th role="columnheader" scope="col">Proposal</th>' +
       COUNCIL.map(c => '<th role="columnheader" scope="col">' + c.short + "</th>").join("") +
       '<th role="columnheader" scope="col" class="pts">Points</th></tr>';
@@ -1263,7 +1263,7 @@
       if (reduceMotion.matches || !window.requestAnimationFrame) apply();
       else window.requestAnimationFrame(() => window.requestAnimationFrame(apply));
     }
-    setText(els.verdict, Core.verdictText(t, titles, S.decided));
+    setText(els.verdict, Core.verdictText(t, titles, decided()));
   }
 
   function renderPlan() {
@@ -1372,13 +1372,12 @@
   }
 
   function recordNow() {
-    const reviews = {}, ballots = {}, tiers = {};
-    COUNCIL_IDS.forEach(id => { reviews[id] = S.seats[id].text; ballots[id] = S.seats[id].ballot; });
+    const tiers = {};
     ALL_IDS.forEach(id => { tiers[id] = agentText(id); });
-    return Core.recordMarkdown({
-      brief: S.brief, setupLine: "Agents: " + Core.agentsSentence(S.agents, { customUrl: creds.urls.custom }) + " Length: " + LENGTHS[S.length].label + ".",
-      tiers, proposals: proposalsMap(), reviews, ballots, tally: S.tally, decided: S.decided, plan: S.seats.chair.text,
-    });
+    return Core.recordMarkdown(Object.assign(Core.sessionOf(S.handoffs), {
+      setupLine: "Agents: " + Core.agentsSentence(S.agents, { customUrl: creds.urls.custom }) + " Length: " + LENGTHS[brief().length].label + ".",
+      tiers,
+    }));
   }
 
   // Outside Claude there's no save capability; a plain download link does the job.
@@ -1395,9 +1394,10 @@
   }
 
   async function saveFile(kind, btn) {
-    if (S.seats.chair.status !== "done") return;
-    const planText = S.seats.chair.text;
-    const base = Core.slug(Core.titleOf(planText) || S.brief.feature.slice(0, 60));
+    const plan = handedOff("chair");
+    if (!plan) return;
+    const planText = plan.text;
+    const base = Core.slug(Core.titleOf(planText) || brief().feature.slice(0, 60));
     const filename = (kind === "plan" ? "plan-" : "council-record-") + base + ".md";
     const data = kind === "plan" ? planText.trim() + "\n" : recordNow();
     if (!downloadsNS) {
@@ -1728,7 +1728,9 @@
     });
   });
   els.copyPlan.addEventListener("click", async () => {
-    const ok = await copyText(S.seats.chair.text.trim() + "\n");
+    const plan = handedOff("chair");
+    if (!plan) return;
+    const ok = await copyText(plan.text.trim() + "\n");
     flash(els.copyPlan, ok ? "Copied" : "Couldn't copy");
   });
   els.dlPlan.addEventListener("click", () => saveFile("plan", els.dlPlan));
@@ -1779,4 +1781,4 @@
   if (savedLength && LENGTHS[savedLength]) lengthInputs.forEach(i => { i.checked = i.value === savedLength; });
   autosize();
   render();
-})(Core);
+})(Core, Graph);

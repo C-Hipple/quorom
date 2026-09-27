@@ -1,7 +1,7 @@
 const fs = require("fs"), vm = require("vm"), assert = require("assert");
-const src = fs.readFileSync(require("path").join(__dirname, "..", "src", "core.js"), "utf8");
+const read = f => fs.readFileSync(require("path").join(__dirname, "..", "src", f), "utf8");
 const ctx = { URL }; vm.createContext(ctx);
-const Core = vm.runInContext(src + "\nCore;", ctx);
+const Core = vm.runInContext(read("graph.js") + "\n" + read("core.js") + "\nCore;", ctx);
 const J = v => JSON.parse(JSON.stringify(v));
 const deq = (a, b) => assert.deepStrictEqual(J(a), J(b));
 let n = 0;
@@ -280,5 +280,85 @@ t("agents with tools are invited to read the project, others aren't", () => {
   const c = Core.councilPrompt(Core.COUNCIL[0], b, props, 200, 1000, 1000, { explore: true });
   assert.ok(c.includes("check what the proposals claim about the existing code"));
   assert.ok(c.trim().endsWith("Write nothing after the code block."));
+});
+// ---------- The session graph ----------
+const Graph = vm.runInContext("Graph", ctx);
+const G = Core.SESSION;
+const H = (id, kind, data) => Graph.handoff(id, kind, data);
+const taskFor = (node, handoffs) => {
+  const inputs = {};
+  G.nodes[node].needs.forEach(d => { inputs[d] = handoffs[d]; });
+  return { node, kind: G.nodes[node].kind, inputs };
+};
+const sBrief = H("brief", "brief", { feature: "Export reports as CSV.", context: [{ title: "Constraints", text: "No new services." }], length: "brief" });
+const sProps = {};
+["A", "B", "C"].forEach(L => { sProps[L] = H(L, "proposal", { text: "# Plan " + L + "\n> Pitch " + L + ".", title: "Plan " + L }); });
+const ballotBlock = (r, s) => "## Verdict\nOk.\n\n```json\n" + JSON.stringify({ ranking: r, scores: s }) + "\n```";
+const sReviews = {
+  advocate: H("advocate", "review", { text: ballotBlock(["A", "B", "C"], { A: 8, B: 6, C: 4 }), ballot: { ranking: ["A", "B", "C"], scores: { A: 8, B: 6, C: 4 } } }),
+  skeptic: H("skeptic", "review", { text: ballotBlock(["B", "C", "A"], { A: 4, B: 8, C: 6 }), ballot: { ranking: ["B", "C", "A"], scores: { A: 4, B: 8, C: 6 } } }),
+  strategist: H("strategist", "review", { text: ballotBlock(["C", "A", "B"], { A: 6, B: 4, C: 8 }), ballot: { ranking: ["C", "A", "B"], scores: { A: 6, B: 4, C: 8 } } }),
+};
+const sAll = Object.assign({ brief: sBrief }, sProps, sReviews);
+t("the session graph runs brief, proposals, reviews, tally, plan", () => {
+  deq(G.order, ["brief", "A", "B", "C", "advocate", "skeptic", "strategist", "tally", "chair"]);
+  deq(G.nodes.skeptic.needs, ["brief", "A", "B", "C"]);
+  deq(G.nodes.tally.needs, ["advocate", "skeptic", "strategist"]);
+  deq(G.nodes.chair.needs, ["brief", "A", "B", "C", "advocate", "skeptic", "strategist", "tally"]);
+  deq(G.order.map(id => G.nodes[id].kind), ["brief", "proposal", "proposal", "proposal", "review", "review", "review", "tally", "plan"]);
+  assert.ok(G.order.every(id => G.nodes[id].kind === "brief" || Core.STEPS[G.nodes[id].kind]), "every step has a worker");
+});
+t("a builder writes from the brief it's handed", () => {
+  const p = Core.STEPS.proposal.prompt(taskFor("B", sAll), {});
+  assert.ok(p.startsWith("You are The Visionary"));
+  assert.ok(p.includes('"""\nExport reports as CSV.\n"""'));
+  assert.ok(p.includes("=== Context: Constraints ===\nNo new services."));
+  assert.ok(p.includes("about 300 words"), "length comes from the brief");
+  deq(Core.STEPS.proposal.result(taskFor("B", sAll), "# Lend Loop\nText"), { text: "# Lend Loop\nText", title: "Lend Loop" });
+});
+t("a councilor reviews the proposals it's handed", () => {
+  const p = Core.STEPS.review.prompt(taskFor("skeptic", sAll), { explore: true });
+  assert.ok(p.startsWith("You are The Skeptic"));
+  assert.ok(p.indexOf("=== Proposal B ===\n# Plan B") < p.indexOf("=== Proposal A ===\n# Plan A"));
+  assert.ok(p.includes("check what the proposals claim about the existing code"));
+  assert.ok(p.includes("about 160 words"));
+});
+t("a review must end with a ballot", () => {
+  const task = taskFor("advocate", sAll);
+  deq(Core.STEPS.review.result(task, sReviews.advocate.data.text).ballot, { ranking: ["A", "B", "C"], scores: { A: 8, B: 6, C: 4 } });
+  let err = null;
+  try { Core.STEPS.review.result(task, "## Verdict\nNo ballot."); } catch (e) { err = e; }
+  assert.strictEqual(err.code, "bad_ballot");
+  assert.strictEqual(err.text, "## Verdict\nNo ballot.", "the review is kept for the reader");
+});
+t("the tally counts the ballots it's handed", () => {
+  const T = Core.STEPS.tally.compute(taskFor("tally", sAll));
+  deq(T, Core.computeTally({ advocate: sReviews.advocate.data.ballot, skeptic: sReviews.skeptic.data.ballot, strategist: sReviews.strategist.data.ballot }));
+  assert.strictEqual(T.decidedBy, "chair");
+});
+t("the Chair plans from everything, and decides a deadlock", () => {
+  const tallied = Object.assign({ tally: H("tally", "tally", Core.STEPS.tally.compute(taskFor("tally", sAll))) }, sAll);
+  const task = taskFor("chair", tallied);
+  const p = Core.STEPS.plan.prompt(task, {});
+  assert.ok(p.startsWith("You are the Chair"));
+  assert.ok(p.includes("=== Proposal C, by the Architect ===\n# Plan C"));
+  assert.ok(p.includes("=== Review by the Skeptic ===\n## Verdict\nOk.\nBallot: 1st B, 2nd C, 3rd A."));
+  assert.ok(p.includes("I cast the deciding vote for Proposal X."));
+  assert.ok(p.includes("about 650 words"));
+  deq(Core.STEPS.plan.result(task, "# P\n\n## The decision\nI cast the deciding vote for Proposal C."), { text: "# P\n\n## The decision\nI cast the deciding vote for Proposal C.", decided: "C" });
+  const won = Object.assign({}, tallied, { tally: H("tally", "tally", Object.assign({}, tallied.tally.data, { decidedBy: "points", winner: "A" })) });
+  assert.strictEqual(Core.STEPS.plan.result(taskFor("chair", won), "# P\nProposal C was good too.").decided, null);
+});
+t("sessionOf reads the handoffs back", () => {
+  const s = Core.sessionOf(Object.assign({ chair: H("chair", "plan", { text: "# Plan", decided: "C" }) }, sAll));
+  assert.strictEqual(s.brief.feature, "Export reports as CSV.");
+  deq(s.proposals, { A: "# Plan A\n> Pitch A.", B: "# Plan B\n> Pitch B.", C: "# Plan C\n> Pitch C." });
+  deq(s.ballots.skeptic.ranking, ["B", "C", "A"]);
+  assert.strictEqual(s.tally, null);
+  assert.strictEqual(s.plan, "# Plan");
+  assert.strictEqual(s.decided, "C");
+  const empty = Core.sessionOf({});
+  assert.strictEqual(empty.brief, null);
+  assert.strictEqual(empty.proposals.A, "");
 });
 console.log(n + " tests passed" + (process.exitCode ? " (with failures)" : ""));

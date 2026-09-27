@@ -70,13 +70,30 @@ Build `dist/quorum.html` and ask Claude to publish that file as an artifact with
 |---|---|
 | `src/head.html` | Document head and all of the CSS |
 | `src/body.html` | Page markup, including the seating chart SVG |
-| `src/core.js` | Pure logic: the cast and their prompts, context handling, providers and models, the streaming parser, the Markdown renderer, ballot parsing, the vote count and the full-record export |
+| `src/graph.js` | Declares a graph of steps, checks it up front, and runs it as a queue of tasks that pass each other frozen handoffs |
+| `src/core.js` | Pure logic: the cast and their prompts, the session graph and what each step does, context handling, providers and models, the streaming parser, the Markdown renderer, ballot parsing, the vote count and the full-record export |
 | `src/providers.js` | Calls to each provider: Claude through the artifact runtime, and streamed chat completions for OpenRouter, Hermes Agent and other endpoints |
-| `src/app.js` | The session pipeline, the agents and providers settings, rendering and event handling |
+| `src/app.js` | Running the session graph, the agents and providers settings, rendering and event handling |
 | `build.js` | Assembles `src/` into `dist/quorum.html` |
 | `serve.js` | Serves `dist/` at http://localhost:8765 for `npm start` |
 | `dist/quorum.html` | The built single-file page |
 | `test/` | Unit tests for `core.js`, and in-page tests that stand in a simulated Claude and simulated OpenRouter, Hermes Agent and custom endpoints |
+
+### The session graph
+
+A session is declared up front, as `SESSION` in `src/core.js`, as a directed acyclic graph of nine steps:
+
+| Step | Needs | Hands on |
+|---|---|---|
+| `brief` | Nothing. It's made when the council convenes | The feature request, the context and the length |
+| `A`, `B`, `C` | `brief` | A proposal and its title |
+| `advocate`, `skeptic`, `strategist` | `brief` and the three proposals | A review and its ballot |
+| `tally` | The three reviews | The count |
+| `chair` | Everything above | The plan, and the deciding vote if the council was deadlocked |
+
+`src/graph.js` checks the graph before anything runs, rejecting cycles and steps that need something that isn't there. It then works through the graph as a queue of tasks. A step starts as soon as everything it needs has been handed off, so the builders write side by side, and so do the councilors. Each task carries only the handoffs its step needs. What a worker returns is copied and frozen into a handoff for the steps after it, so no step can see or change another's work. `STEPS` in `src/core.js` says how each kind of step turns its inputs into a prompt, and how it turns the agent's answer into what it hands on.
+
+If a step fails, nothing that needs it starts. A retry runs the graph again from the handoffs already made, so only the unfinished steps are asked again.
 
 ## Build and test
 

@@ -3,25 +3,25 @@
 //   FAKE:crash   writes to stderr and exits without a result
 //   FAKE:slow    starts, then waits until it's killed, having added its pid to FAKE_PID_FILE
 //   FAKE:pause   waits a moment after reading a file, before it writes
-//   otherwise    reads a file, then answers: as the Quorum seat the prompt names, or with the arguments and folder
-//                it was run with. With FAKE_LOG set, it adds { args, cwd, prompt } to that file as a line of JSON.
-const fs = require("fs");
-const path = require("path");
+//   otherwise    thinks, says it will look, reads src/app.js, then answers: as the Quorum seat the prompt names, or
+//                with the arguments and folder it was run with. With FAKE_LOG set, it adds { args, cwd, prompt } to that file as a line of JSON.
+import fs from "node:fs";
+import path from "node:path";
 
 if (process.argv.includes("--version")) {
   console.log("9.9.9 (Claude Code)");
   process.exit(0);
 }
 
-const out = o => process.stdout.write(JSON.stringify(o) + "\n");
-const ev = event => out({ type: "stream_event", event, parent_tool_use_id: null });
+const out = (o: unknown) => process.stdout.write(JSON.stringify(o) + "\n");
+const ev = (event: unknown) => out({ type: "stream_event", event, parent_tool_use_id: null });
 
 let prompt = "";
 process.stdin.setEncoding("utf8");
-process.stdin.on("data", c => { prompt += c; });
+process.stdin.on("data", (c: string) => { prompt += c; });
 
 // A valid answer for each Quorum seat, which says where it ran.
-function seatAnswer(p) {
+function seatAnswer(p: string): string | null {
   const seat = (/^You are (The \w+ Reviewer|The \w+|the Chair)/.exec(p) || [])[1];
   const where = "Ran in " + process.cwd() + ".";
   if (/^You are the Chair[^\n]*finishing the plan after its final review/.test(p)) {
@@ -66,18 +66,29 @@ process.stdin.on("end", () => {
     return;
   }
 
-  // A preamble, a tool call, then the answer in a second message.
+  // Some reasoning, a preamble and a tool call, then the answer in a second message. Claude Code streams each
+  // message's text as it's written, and sends each block again whole once it's done.
+  const file = path.join(process.cwd(), "src", "app.js");
   ev({ type: "message_start", message: { model } });
-  ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Let me look first." } });
-  out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: path.join(process.cwd(), "src", "app.js") } }] }, parent_tool_use_id: null });
+  out({ type: "assistant", message: { content: [{ type: "thinking", thinking: "I should read the app first.", signature: "sig" }] }, parent_tool_use_id: null });
+  ev({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Let me look first." } });
+  out({ type: "assistant", message: { content: [{ type: "text", text: "Let me look first." }] }, parent_tool_use_id: null });
+  out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: file } }] }, parent_tool_use_id: null });
   // A subagent's work is ignored.
   out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t2", name: "Grep", input: { pattern: "secret" } }] }, parent_tool_use_id: "t9" });
-  out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "..." }] }, parent_tool_use_id: null });
+  const found = fs.existsSync(file);
+  out({
+    type: "user", parent_tool_use_id: null,
+    message: { content: [{ type: "tool_result", tool_use_id: "t1", content: found ? fs.readFileSync(file, "utf8") : "<tool_use_error>File does not exist.</tool_use_error>", is_error: !found }] },
+  });
   setTimeout(() => {
     ev({ type: "message_start", message: { model } });
     const answer = seatAnswer(prompt) || "# Fake answer\n\n" + JSON.stringify({ args, cwd: process.cwd(), prompt });
     (answer.match(/[\s\S]{1,40}/g) || []).forEach(p => ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: p } }));
     out({ type: "assistant", message: { content: [{ type: "text", text: answer }] }, parent_tool_use_id: null });
-    out({ type: "result", subtype: "success", is_error: false, stop_reason: "end_turn", result: answer });
+    out({
+      type: "result", subtype: "success", is_error: false, stop_reason: "end_turn", result: answer,
+      num_turns: 2, duration_ms: 1500, total_cost_usd: 0.0123, usage: { input_tokens: 1000, cache_read_input_tokens: 200, output_tokens: 300 },
+    });
   }, prompt.includes("FAKE:pause") ? 600 : 0);
 });

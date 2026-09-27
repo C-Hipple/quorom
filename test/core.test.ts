@@ -1,11 +1,14 @@
-const fs = require("fs"), vm = require("vm"), assert = require("assert");
-const read = f => fs.readFileSync(require("path").join(__dirname, "..", "src", f), "utf8");
-const ctx = { URL }; vm.createContext(ctx);
-const Core = vm.runInContext(read("graph.js") + "\n" + read("core.js") + "\nCore;", ctx);
-const J = v => JSON.parse(JSON.stringify(v));
-const deq = (a, b) => assert.deepStrictEqual(J(a), J(b));
-let n = 0;
-const t = (name, fn) => { try { fn(); n++; } catch (e) { console.error("FAIL:", name, "\n", e.message); process.exitCode = 1; } };
+// Tests for src/core.ts: Markdown, ballots, the count, prompts, the session graph and the written record.
+import { test as t } from "bun:test";
+import assert from "node:assert";
+import { Core, type Ballot, type Brief, type RecordView, type SessionView, type Transcript } from "../src/core";
+import { Graph, type GraphDef, type Handoffs, type Task } from "../src/graph";
+
+const J = (v: unknown) => JSON.parse(JSON.stringify(v));
+// Compares as JSON. A third argument says what's being checked, for the reader.
+const deq = (a: unknown, b: unknown, _about?: string) => assert.deepStrictEqual(J(a), J(b));
+// The steps as the tests call them, whatever their kind, with only the inputs each one reads.
+const STEPS: Record<string, any> = Core.STEPS;
 
 // ---------- Markdown ----------
 const md = Core.renderMarkdown;
@@ -58,19 +61,19 @@ t("namesList", () => assert.strictEqual(Core.namesList(["The Visionary", "The Sk
 
 // ---------- Ballots ----------
 const review = "## Verdict\nB is best.\n\n## A: X\nok\n\n## Worth keeping\nThe sign-out sheet.\n\n```json\n{\"ranking\": [\"B\", \"A\", \"C\"], \"scores\": {\"A\": 7, \"B\": 9, \"C\": 4}}\n```";
-const F = body => "```json\n" + body + "\n```";
+const F = (body: string) => "```json\n" + body + "\n```";
 t("extract fenced", () => deq(Core.extractBallot(review), { ranking: ["B", "A", "C"], scores: { A: 7, B: 9, C: 4 } }));
-t("extract raw", () => deq(Core.extractBallot('Text\n{"ranking":["C","B","A"],"scores":{"A":3,"B":5,"C":8}}').ranking, ["C", "B", "A"]));
-t("extract after other fence", () => deq(Core.extractBallot("```\ncode\n```\ntext\n" + F('{"ranking":["A","C","B"],"scores":{"A":9,"B":2,"C":5}}')).ranking, ["A", "C", "B"]));
-t("extract unterminated", () => deq(Core.extractBallot('x\n```json\n{"ranking": ["A","B","C"], "scores": {"A":1,"B":2,"C":3}}').ranking, ["A", "B", "C"]));
-t("extract smart quotes + trailing comma", () => deq(Core.extractBallot(F("{\u201Cranking\u201D: [\u201CB\u201D, \u201CC\u201D, \u201CA\u201D,], \u201Cscores\u201D: {\u201CA\u201D: 2, \u201CB\u201D: 8, \u201CC\u201D: 6}}")).ranking, ["B", "C", "A"]));
+t("extract raw", () => deq(Core.extractBallot('Text\n{"ranking":["C","B","A"],"scores":{"A":3,"B":5,"C":8}}')!.ranking, ["C", "B", "A"]));
+t("extract after other fence", () => deq(Core.extractBallot("```\ncode\n```\ntext\n" + F('{"ranking":["A","C","B"],"scores":{"A":9,"B":2,"C":5}}'))!.ranking, ["A", "C", "B"]));
+t("extract unterminated", () => deq(Core.extractBallot('x\n```json\n{"ranking": ["A","B","C"], "scores": {"A":1,"B":2,"C":3}}')!.ranking, ["A", "B", "C"]));
+t("extract smart quotes + trailing comma", () => deq(Core.extractBallot(F("{\u201Cranking\u201D: [\u201CB\u201D, \u201CC\u201D, \u201CA\u201D,], \u201Cscores\u201D: {\u201CA\u201D: 2, \u201CB\u201D: 8, \u201CC\u201D: 6}}"))!.ranking, ["B", "C", "A"]));
 t("proposal names in ranking", () => deq(Core.extractBallot(F('{"ranking": ["Proposal C", "Proposal A", "Proposal B"], "scores": {"Proposal A": 6, "Proposal B": 4, "Proposal C": 8.6}}')), { ranking: ["C", "A", "B"], scores: { A: 6, B: 4, C: 9 } }));
-t("two-letter ranking filled", () => deq(Core.extractBallot(F('{"ranking": ["b", "a"], "scores": {}}')).ranking, ["B", "A", "C"]));
-t("scores only", () => deq(Core.extractBallot(F('{"scores": {"A": 4, "B": 9, "C": 6}}')).ranking, ["B", "C", "A"]));
-t("clamp", () => { const b = Core.extractBallot(F('{"ranking":["A","B","C"],"scores":{"A":14,"B":0,"C":"5"}}')); deq([b.scores.A, b.scores.B, b.scores.C], [10, 1, 5]); });
+t("two-letter ranking filled", () => deq(Core.extractBallot(F('{"ranking": ["b", "a"], "scores": {}}'))!.ranking, ["B", "A", "C"]));
+t("scores only", () => deq(Core.extractBallot(F('{"scores": {"A": 4, "B": 9, "C": 6}}'))!.ranking, ["B", "C", "A"]));
+t("clamp", () => { const b = Core.extractBallot(F('{"ranking":["A","B","C"],"scores":{"A":14,"B":0,"C":"5"}}'))!; deq([b.scores.A, b.scores.B, b.scores.C], [10, 1, 5]); });
 t("no ballot", () => assert.strictEqual(Core.extractBallot("## Verdict\nNo JSON here."), null));
 t("garbage ballot", () => assert.strictEqual(Core.extractBallot(F('{"ranking": "unclear"}')), null));
-t("string ranking", () => deq(Core.extractBallot(F('{"ranking": "C > A > B", "scores": {"A": 5, "B": 3, "C": 7}}')).ranking, ["C", "A", "B"]));
+t("string ranking", () => deq(Core.extractBallot(F('{"ranking": "C > A > B", "scores": {"A": 5, "B": 3, "C": 7}}'))!.ranking, ["C", "A", "B"]));
 t("placeholder echo rejected", () => assert.strictEqual(Core.extractBallot(F('{"ranking": ["<best>", "<middle>", "<worst>"], "scores": {"A": <1-10>}}')), null));
 
 // ---------- reviewBody ----------
@@ -86,7 +89,7 @@ t("reviewBody keeps non-ballot code", () => assert.ok(Core.reviewBody("Look:\n``
 t("reviewBody empty", () => assert.strictEqual(Core.reviewBody(""), ""));
 
 // ---------- Tally ----------
-const B = (r, s) => ({ ranking: r, scores: s || {} });
+const B = (r: string[], s?: Record<string, number>): Ballot => ({ ranking: r, scores: s || {} });
 t("tally points", () => {
   const T = Core.computeTally({ advocate: B(["B", "A", "C"], { A: 7, B: 9, C: 4 }), skeptic: B(["A", "B", "C"], { A: 8, B: 7, C: 3 }), strategist: B(["B", "C", "A"], { A: 5, B: 8, C: 6 }) });
   assert.strictEqual(T.winner, "B"); assert.strictEqual(T.decidedBy, "points");
@@ -155,7 +158,7 @@ t("chair prompt", () => {
   const ballots = { advocate: B(["B", "A", "C"], { A: 7, B: 9, C: 4 }), skeptic: B(["A", "C", "B"], { A: 8, B: 3, C: 6 }), strategist: B(["B", "C", "A"], { A: 5, B: 8, C: 6 }) };
   const T = Core.computeTally(ballots);
   const reviews = { advocate: review, skeptic: "## Verdict\nA.\n```json\n{}\n```", strategist: "## Verdict\nB." };
-  const p = Core.chairPrompt({ brief, proposals: props, reviews, ballots, tally: T }, 1000, 12000);
+  const p = Core.chairPrompt({ brief, proposals: props, reviews, ballots, tally: T } as unknown as SessionView, 1000, 12000);
   assert.ok(p.includes("=== Context: Product requirements ==="));
   assert.ok(p.includes("## Implementation steps") && p.includes("## Rollout") && p.includes("## Requirements"));
   assert.ok(p.includes('Result: Proposal B, "Lend Loop", won with 7 of 9 possible points.'), p.slice(p.indexOf("Result"), p.indexOf("Result") + 120));
@@ -165,7 +168,7 @@ t("chair prompt", () => {
 });
 t("chair prompt deadlock", () => {
   const ballots = { advocate: B(["A", "B", "C"], { A: 8, B: 6, C: 4 }), skeptic: B(["B", "C", "A"], { A: 4, B: 8, C: 6 }), strategist: B(["C", "A", "B"], { A: 6, B: 4, C: 8 }) };
-  const p = Core.chairPrompt({ brief: { feature: "Idea", context: [] }, proposals: props, reviews: { advocate: "", skeptic: "", strategist: "" }, ballots, tally: Core.computeTally(ballots) }, 850, 12000);
+  const p = Core.chairPrompt({ brief: { feature: "Idea", context: [] }, proposals: props, reviews: { advocate: "", skeptic: "", strategist: "" }, ballots, tally: Core.computeTally(ballots) } as unknown as SessionView, 850, 12000);
   assert.ok(p.includes('"I cast the deciding vote for Proposal X."'));
   assert.ok(p.includes("If a councilor ranked the proposal you choose last"));
 });
@@ -192,7 +195,7 @@ t("record", () => {
   const ballots = { advocate: B(["B", "A", "C"], { A: 7, B: 9, C: 4 }), skeptic: B(["A", "B", "C"], { A: 8, B: 7, C: 3 }), strategist: B(["B", "C", "A"], { A: 5, B: 8, C: 6 }) };
   const T = Core.computeTally(ballots);
   const tiers = { A: "Fast", B: "Fast", C: "Fast", advocate: "Frontier", skeptic: "Frontier", strategist: "Frontier", chair: "Frontier" };
-  const r = Core.recordMarkdown({ brief: { feature: "Line one\nLine two", context: [{ title: "Relevant code", text: "const a = 1;\n```\nnested fence\n```\n" }] }, setupLine: "Models: " + Core.modelsSentence(Core.DEFAULT_MODELS) + " Length: Standard.", tiers, proposals: props, reviews: { advocate: review, skeptic: "## Verdict\nOk", strategist: "## Verdict\nFine" }, ballots, tally: T, decided: null, plan: "# The Plan\n\n## The decision\nB." });
+  const r = Core.recordMarkdown({ brief: { feature: "Line one\nLine two", context: [{ title: "Relevant code", text: "const a = 1;\n```\nnested fence\n```\n" }] }, setupLine: "Models: " + Core.modelsSentence(Core.DEFAULT_MODELS) + " Length: Standard.", tiers, proposals: props, reviews: { advocate: review, skeptic: "## Verdict\nOk", strategist: "## Verdict\nFine" }, ballots, tally: T, decided: null, plan: "# The Plan\n\n## The decision\nB." } as unknown as RecordView);
   assert.ok(r.startsWith("# The Plan"));
   assert.ok(r.includes("## The feature request\n\n> Line one\n> Line two"));
   assert.ok(r.includes("## The context\n\n### Relevant code\n\n````text\nconst a = 1;\n```\nnested fence\n```\n````\n"), r.slice(r.indexOf("## The context"), r.indexOf("## The context") + 200));
@@ -241,7 +244,7 @@ t("agent labels", () => {
   assert.strictEqual(Core.agentsSentence(Core.normalizeAgents(null, false)), "Builders on hermes-4-70b via OpenRouter, the council on hermes-4-405b via OpenRouter and the Chair on hermes-4-405b via OpenRouter.");
 });
 t("SSE parser", () => {
-  const got = [];
+  const got: unknown[] = [];
   const p = Core.createSSEParser(e => got.push(e));
   p.feed(": OPENROUTER PROCESSING\n\ndata: {\"a\":1}\n\nevent: hermes.tool.progress\ndata: {\"tool\":\"read_file\"}\n\ndata: li");
   p.feed("ne1\ndata: line2\n\n: keepalive\r\n\r");
@@ -301,7 +304,7 @@ t("agents inside the project folder are told to explore it and ground their work
   assert.ok(c.includes("assumes about the existing system that the code or the context doesn't support."));
   assert.ok(c.includes("read the files they name. Then write your whole review, ending with the ballot, as your final message."));
   const ballots = { advocate: { ranking: ["A", "B", "C"], scores: {} }, skeptic: { ranking: ["A", "C", "B"], scores: {} }, strategist: { ranking: ["B", "A", "C"], scores: {} } };
-  const s = { brief: b, proposals: props, reviews: { advocate: "", skeptic: "", strategist: "" }, ballots, tally: Core.computeTally(ballots) };
+  const s = { brief: b, proposals: props, reviews: { advocate: "", skeptic: "", strategist: "" }, ballots, tally: Core.computeTally(ballots) } as unknown as SessionView;
   const ch = Core.chairPrompt(s, 800, 1000, 1000, inside);
   assert.ok(ch.includes("Work from the project's code and the context, and where they don't cover something the plan depends on"));
   assert.ok(ch.includes("Only name files, modules or services you found in the project or the context; otherwise describe them."));
@@ -315,18 +318,17 @@ t("agents inside the project folder are told to explore it and ground their work
   assert.strictEqual(Core.exploreNote("builder", b, {}), "");
 });
 // ---------- The session graph ----------
-const Graph = vm.runInContext("Graph", ctx);
 const G = Core.SESSION;
-const H = (id, kind, data) => Graph.handoff(id, kind, data);
-const taskFor = (node, handoffs, graph) => {
-  const g = graph || G, inputs = {};
+const H = (id: string, kind: string, data: unknown) => Graph.handoff(id, kind, data);
+const taskFor = (node: string, handoffs: Handoffs, graph?: GraphDef): Task => {
+  const g = graph || G, inputs: Handoffs = {};
   g.nodes[node].needs.forEach(d => { inputs[d] = handoffs[d]; });
   return { node, kind: g.nodes[node].kind, inputs };
 };
 const sBrief = H("brief", "brief", { feature: "Export reports as CSV.", context: [{ title: "Constraints", text: "No new services." }], length: "brief" });
-const sProps = {};
+const sProps: Handoffs = {};
 ["A", "B", "C"].forEach(L => { sProps[L] = H(L, "proposal", { text: "# Plan " + L + "\n> Pitch " + L + ".", title: "Plan " + L }); });
-const ballotBlock = (r, s) => "## Verdict\nOk.\n\n```json\n" + JSON.stringify({ ranking: r, scores: s }) + "\n```";
+const ballotBlock = (r: string[], s: Record<string, number>) => "## Verdict\nOk.\n\n```json\n" + JSON.stringify({ ranking: r, scores: s }) + "\n```";
 const sReviews = {
   advocate: H("advocate", "review", { text: ballotBlock(["A", "B", "C"], { A: 8, B: 6, C: 4 }), ballot: { ranking: ["A", "B", "C"], scores: { A: 8, B: 6, C: 4 } } }),
   skeptic: H("skeptic", "review", { text: ballotBlock(["B", "C", "A"], { A: 4, B: 8, C: 6 }), ballot: { ranking: ["B", "C", "A"], scores: { A: 4, B: 8, C: 6 } } }),
@@ -343,15 +345,15 @@ t("the session graph runs brief, proposals, reviews, tally, plan", () => {
   assert.ok(G.order.every(id => Core.HANDED_IN.indexOf(id) >= 0 || Core.STEPS[G.nodes[id].kind]), "every step has a worker");
 });
 t("a builder writes from the brief it's handed", () => {
-  const p = Core.STEPS.proposal.prompt(taskFor("B", sAll), {});
+  const p = STEPS.proposal.prompt(taskFor("B", sAll), {});
   assert.ok(p.startsWith("You are The Visionary"));
   assert.ok(p.includes('"""\nExport reports as CSV.\n"""'));
   assert.ok(p.includes("=== Context: Constraints ===\nNo new services."));
   assert.ok(p.includes("about 300 words"), "length comes from the brief");
-  deq(Core.STEPS.proposal.result(taskFor("B", sAll), "# Lend Loop\nText"), { text: "# Lend Loop\nText", title: "Lend Loop" });
+  deq(STEPS.proposal.result(taskFor("B", sAll), "# Lend Loop\nText"), { text: "# Lend Loop\nText", title: "Lend Loop" });
 });
 t("a councilor reviews the proposals it's handed", () => {
-  const p = Core.STEPS.review.prompt(taskFor("skeptic", sAll), { explore: true });
+  const p = STEPS.review.prompt(taskFor("skeptic", sAll), { explore: true });
   assert.ok(p.startsWith("You are The Skeptic"));
   assert.ok(p.indexOf("=== Proposal B ===\n# Plan B") < p.indexOf("=== Proposal A ===\n# Plan A"));
   assert.ok(p.includes("check what the proposals claim about the existing code"));
@@ -359,29 +361,29 @@ t("a councilor reviews the proposals it's handed", () => {
 });
 t("a review must end with a ballot", () => {
   const task = taskFor("advocate", sAll);
-  deq(Core.STEPS.review.result(task, sReviews.advocate.data.text).ballot, { ranking: ["A", "B", "C"], scores: { A: 8, B: 6, C: 4 } });
-  let err = null;
-  try { Core.STEPS.review.result(task, "## Verdict\nNo ballot."); } catch (e) { err = e; }
+  deq(STEPS.review.result(task, sReviews.advocate.data.text).ballot, { ranking: ["A", "B", "C"], scores: { A: 8, B: 6, C: 4 } });
+  let err: any = null;
+  try { STEPS.review.result(task, "## Verdict\nNo ballot."); } catch (e) { err = e; }
   assert.strictEqual(err.code, "bad_ballot");
   assert.strictEqual(err.text, "## Verdict\nNo ballot.", "the review is kept for the reader");
 });
 t("the tally counts the ballots it's handed", () => {
-  const T = Core.STEPS.tally.compute(taskFor("tally", sAll));
+  const T = STEPS.tally.compute(taskFor("tally", sAll));
   deq(T, Core.computeTally({ advocate: sReviews.advocate.data.ballot, skeptic: sReviews.skeptic.data.ballot, strategist: sReviews.strategist.data.ballot }));
   assert.strictEqual(T.decidedBy, "chair");
 });
 t("the Chair plans from everything, and decides a deadlock", () => {
-  const tallied = Object.assign({ tally: H("tally", "tally", Core.STEPS.tally.compute(taskFor("tally", sAll))) }, sAll);
+  const tallied = Object.assign({ tally: H("tally", "tally", STEPS.tally.compute(taskFor("tally", sAll))) }, sAll);
   const task = taskFor("chair", tallied);
-  const p = Core.STEPS.plan.prompt(task, {});
+  const p = STEPS.plan.prompt(task, {});
   assert.ok(p.startsWith("You are the Chair"));
   assert.ok(p.includes("=== Proposal C, by the Architect ===\n# Plan C"));
   assert.ok(p.includes("=== Review by the Skeptic ===\n## Verdict\nOk.\nBallot: 1st B, 2nd C, 3rd A."));
   assert.ok(p.includes("I cast the deciding vote for Proposal X."));
   assert.ok(p.includes("about 650 words"));
-  deq(Core.STEPS.plan.result(task, "# P\n\n## The decision\nI cast the deciding vote for Proposal C."), { text: "# P\n\n## The decision\nI cast the deciding vote for Proposal C.", decided: "C" });
+  deq(STEPS.plan.result(task, "# P\n\n## The decision\nI cast the deciding vote for Proposal C."), { text: "# P\n\n## The decision\nI cast the deciding vote for Proposal C.", decided: "C" });
   const won = Object.assign({}, tallied, { tally: H("tally", "tally", Object.assign({}, tallied.tally.data, { decidedBy: "points", winner: "A" })) });
-  assert.strictEqual(Core.STEPS.plan.result(taskFor("chair", won), "# P\nProposal C was good too.").decided, null);
+  assert.strictEqual(STEPS.plan.result(taskFor("chair", won), "# P\nProposal C was good too.").decided, null);
 });
 t("sessionOf reads the handoffs back", () => {
   const s = Core.sessionOf(Object.assign({ chair: H("chair", "plan", { text: "# Plan", decided: "C" }) }, sAll));
@@ -420,7 +422,7 @@ t("a revision carries the input and the round it revises", () => {
 });
 t("in a revision round, each builder revises its own proposal against the input and the last plan", () => {
   const inputs = Object.assign({}, sAll, { revision: H("revision", "revision", rev2) });
-  const p = Core.STEPS.proposal.prompt(taskFor("A", inputs), {});
+  const p = STEPS.proposal.prompt(taskFor("A", inputs), {});
   assert.ok(p.includes("This is round 2. In round 1 the council adopted Proposal B, \u201CPlan B\u201D, and the Chair wrote the plan below."));
   assert.ok(p.includes("The requester's input on the round 1 plan:\n\"\"\"\nWhy not reuse the job queue?\nAlso, exports must be audited.\n\"\"\""));
   assert.ok(p.includes("=== Plan from round 1 ===\n# Plan B wins"));
@@ -428,12 +430,12 @@ t("in a revision round, each builder revises its own proposal against the input 
   assert.ok(!p.includes("# Plan C\n> Pitch C."), "a builder sees only its own earlier proposal");
   assert.ok(p.indexOf("## What changed") > p.indexOf("## Risks and trade-offs") && p.indexOf("## What changed") < p.indexOf("## Why the council should choose this"));
   assert.ok(!p.includes("What the requester asked for before"), "no earlier inputs in round 2");
-  const first = Core.STEPS.proposal.prompt(taskFor("A", sAll), {});
+  const first = STEPS.proposal.prompt(taskFor("A", sAll), {});
   assert.ok(!first.includes("This is round") && !first.includes("## What changed"), "the first round is unchanged");
 });
 t("in a revision round, the council judges the revised proposals against the input", () => {
   const inputs = Object.assign({}, sAll, { revision: H("revision", "revision", rev2) });
-  const p = Core.STEPS.review.prompt(taskFor("skeptic", inputs), {});
+  const p = STEPS.review.prompt(taskFor("skeptic", inputs), {});
   assert.ok(p.includes("This is round 2. The requester read the round 1 plan and responded with the input below, and the builders revised their proposals."));
   assert.ok(p.indexOf("=== Plan from round 1 ===") < p.indexOf("=== Proposal B ==="), "the input and the last plan come before the proposals");
   assert.ok(p.includes("exports must be audited."));
@@ -441,15 +443,15 @@ t("in a revision round, the council judges the revised proposals against the inp
 });
 t("in a revision round, the Chair answers the input in the revised plan", () => {
   const later = Core.nextRevision(Core.sessionOf(Object.assign({}, round1, { revision: H("revision", "revision", rev2) })), "Ship it behind a flag.");
-  const inputs = Object.assign({}, round1, { revision: H("revision", "revision", later) });
+  const inputs: Handoffs = Object.assign({}, round1, { revision: H("revision", "revision", later) });
   delete inputs.chair;
-  const p = Core.STEPS.plan.prompt(taskFor("chair", inputs), {});
+  const p = STEPS.plan.prompt(taskFor("chair", inputs), {});
   assert.ok(p.includes("This is round 3. The requester read the round 2 plan and responded with the input above"));
   assert.ok(p.includes("Answer every question in the requester's latest input directly"));
   assert.ok(p.includes("What the requester asked for before, which still stands unless the latest input changes it:\n\nInput that started round 2:\n\"\"\"\nWhy not reuse the job queue?"));
   assert.ok(p.indexOf("## Your input, answered") > p.indexOf("## The decision") && p.indexOf("## Your input, answered") < p.indexOf("## Requirements"));
   const huge = Object.assign({}, later, { previous: Object.assign({}, later.previous, { plan: "word ".repeat(40000) }) });
-  const fitted = Core.STEPS.plan.prompt(taskFor("chair", Object.assign({}, inputs, { revision: H("revision", "revision", huge) })), {});
+  const fitted = STEPS.plan.prompt(taskFor("chair", Object.assign({}, inputs, { revision: H("revision", "revision", huge) })), {});
   assert.ok(Core.utf8Len(fitted) <= Core.MAX_PROMPT_BYTES, "a long earlier plan is shortened to fit");
 });
 // ---------- The final review ----------
@@ -478,19 +480,19 @@ t("with a final review, reviewers check the plan and the Chair revises it", () =
   assert.strictEqual(Core.roleOf("final"), "chair");
 });
 t("each reviewer reads the Chair's plan through its lens and grades its findings", () => {
-  const p = Core.STEPS.check.prompt(taskFor("scaling", reviewedHandoffs, R), {});
+  const p = STEPS.check.prompt(taskFor("scaling", reviewedHandoffs, R), {});
   assert.ok(p.startsWith("You are The Scaling Reviewer, one of two reviewers who give the plan from Quorum"));
   assert.ok(p.includes("you review it for how it holds up as usage grows, and the Security Reviewer reviews it for security and privacy."));
   assert.ok(p.includes("=== The Chair's plan ===\n# Plan B wins"));
   assert.ok(p.includes("Begin each finding with its severity in bold, one of **Critical**, **High**, **Medium** or **Low**"));
   assert.ok(p.includes("about 220 words"), "reviews have their own length");
   assert.ok(!p.includes("=== Proposal"), "the reviewers review the plan, not the proposals");
-  const sec = Core.STEPS.check.prompt(taskFor("security", reviewedHandoffs, R), {});
+  const sec = STEPS.check.prompt(taskFor("security", reviewedHandoffs, R), {});
   assert.ok(sec.includes("Your lens: Examine the plan for security and privacy: authentication and authorization"));
   assert.ok(sec.includes("ready to build as far as security and privacy goes"));
-  const inside = Core.STEPS.check.prompt(taskFor("security", Object.assign({}, reviewedHandoffs, { brief: H("brief", "brief", Object.assign({}, sBrief.data, { project: { path: "/p", name: "p" } })) }), R), { explore: true, inProject: true });
+  const inside = STEPS.check.prompt(taskFor("security", Object.assign({}, reviewedHandoffs, { brief: H("brief", "brief", Object.assign({}, sBrief.data, { project: { path: "/p", name: "p" } })) }), R), { explore: true, inProject: true });
   assert.ok(inside.includes("Read the code the plan changes, and look for problems of your kind that the plan doesn't account for."));
-  deq(Core.STEPS.check.result(null, scalingText), { text: scalingText, findings: { critical: 0, high: 1, medium: 1, low: 1 } });
+  deq(STEPS.check.result(null, scalingText), { text: scalingText, findings: { critical: 0, high: 1, medium: 1, low: 1 } });
 });
 t("findings are counted by severity from the Findings section only", () => {
   deq(Core.countFindings(securityText), { critical: 0, high: 0, medium: 0, low: 0 });
@@ -501,7 +503,7 @@ t("findings are counted by severity from the Findings section only", () => {
   assert.strictEqual(Core.findingsText(null), "");
 });
 t("the Chair revises its plan to answer the final review, and that becomes the plan", () => {
-  const p = Core.STEPS.final.prompt(taskFor("final", reviewedHandoffs, R), {});
+  const p = STEPS.final.prompt(taskFor("final", reviewedHandoffs, R), {});
   assert.ok(p.startsWith("You are the Chair of Quorum, a small council that decides how to implement a feature in an existing software project, finishing the plan after its final review."));
   assert.ok(p.includes("Before it's final, the Scaling Reviewer reviewed it for how it holds up as usage grows, and the Security Reviewer for security and privacy."));
   assert.ok(p.includes("fix every Critical and High finding in the plan itself"));
@@ -550,7 +552,7 @@ t("with the council's questions, each proposal is questioned and answered before
   assert.strictEqual(Core.graphFor({}), G);
 });
 t("a councilor asks about edge cases, missing requirements and technical debt, through its lens", () => {
-  const p = Core.STEPS.question.prompt(taskFor("ask-skeptic-B", qHandoffs, Q), {});
+  const p = STEPS.question.prompt(taskFor("ask-skeptic-B", qHandoffs, Q), {});
   assert.ok(p.startsWith("You are The Skeptic, one of three councilors on Quorum, a small council that decides how to implement a feature in an existing software project, questioning Proposal B before the council votes."));
   assert.ok(p.includes("Your lens: Look for what could break."));
   assert.ok(p.includes("edge cases it doesn't handle, requirements in the request or the context that it misses or misreads, and technical debt it would create"));
@@ -558,7 +560,7 @@ t("a councilor asks about edge cases, missing requirements and technical debt, t
   assert.ok(p.includes("=== Proposal B ===\n# Plan B\n> Pitch B."));
   assert.ok(!p.includes("=== Proposal A ==="), "it reads only the proposal it's questioning");
   assert.ok(p.includes("about 90 words at most"), "the brief is Brief length");
-  deq(Core.STEPS.question.result(null, qText).questions, ["What happens when two exports run at once?", "Which roles may export? It isn't in the requirements."]);
+  deq(STEPS.question.result(null, qText).questions, ["What happens when two exports run at once?", "Which roles may export? It isn't in the requirements."]);
 });
 t("questions are read from a list, or from prose that asks something", () => {
   deq(Core.parseQuestions("## Questions\nNo questions."), []);
@@ -569,16 +571,16 @@ t("questions are read from a list, or from prose that asks something", () => {
 });
 t("a builder answers the council and adjusts its proposal, unless no one asked anything", () => {
   const withA = Object.assign({}, qHandoffs, { A: sProps.A });
-  const p = Core.STEPS.amend.prompt(taskFor("amend-A", withA, Q), {});
+  const p = STEPS.amend.prompt(taskFor("amend-A", withA, Q), {});
   assert.ok(p.startsWith("You are The Pragmatist, one of three builders on Quorum, a small council that decides how to implement a feature in an existing software project, answering the council's questions about your proposal."));
   assert.ok(p.includes("=== Your proposal ===\n# Plan A\n> Pitch A."));
   assert.ok(p.includes("The Advocate asks:\nNo questions.\n\nThe Skeptic asks:\n1. What happens when two exports run at once?\n2. Which roles may export? It isn't in the requirements."));
   assert.ok(p.includes("## Answers to the council"));
   assert.ok(p.includes("about 400 words"));
-  assert.strictEqual(Core.STEPS.amend.skip(taskFor("amend-A", withA, Q)), null, "questions were asked, so the builder answers");
-  const quiet = Core.STEPS.amend.skip(taskFor("amend-B", qHandoffs, Q));
+  assert.strictEqual(STEPS.amend.skip(taskFor("amend-A", withA, Q)), null, "questions were asked, so the builder answers");
+  const quiet = STEPS.amend.skip(taskFor("amend-B", qHandoffs, Q));
   deq(quiet, { text: "# Plan B\n> Pitch B.", title: "Plan B", amended: false, truncated: false, agent: null, served: "" });
-  deq(Core.STEPS.amend.result(null, "# Plan A, answered\n\n## Answers to the council\n- Queued."), { text: "# Plan A, answered\n\n## Answers to the council\n- Queued.", title: "Plan A, answered", amended: true });
+  deq(STEPS.amend.result(null, "# Plan A, answered\n\n## Answers to the council\n- Queued."), { text: "# Plan A, answered\n\n## Answers to the council\n- Queued.", title: "Plan A, answered", amended: true });
 });
 t("the council reviews the answered proposals, and the record keeps the questions", () => {
   const answered = Object.assign({}, qHandoffs, {
@@ -586,7 +588,7 @@ t("the council reviews the answered proposals, and the record keeps the question
     "amend-B": H("amend-B", "amend", { text: "# Plan B\n> Pitch B.", title: "Plan B", amended: false }),
     "amend-C": H("amend-C", "amend", { text: "# Plan C\n> Pitch C.", title: "Plan C", amended: false }),
   });
-  const p = Core.STEPS.review.prompt(taskFor("advocate", answered, Q), {});
+  const p = STEPS.review.prompt(taskFor("advocate", answered, Q), {});
   assert.ok(p.includes("=== Proposal A ===\n# Plan A, answered"));
   const s = Core.sessionOf(answered);
   assert.strictEqual(s.proposals.A, "# Plan A, answered\n\n## Answers to the council\n- One at a time.");
@@ -605,7 +607,58 @@ t("the council reviews the answered proposals, and the record keeps the question
 });
 t("the record of a revision round quotes the input", () => {
   const T = sTally.data;
-  const r = Core.recordMarkdown({ brief: sBrief.data, revision: rev2, proposals: Core.sessionOf(round1).proposals, reviews: { advocate: "", skeptic: "", strategist: "" }, ballots: { advocate: { ranking: ["B", "A", "C"], scores: {} }, skeptic: { ranking: ["B", "C", "A"], scores: {} }, strategist: { ranking: ["A", "B", "C"], scores: {} } }, tally: T, decided: null, plan: "# Revised" });
+  const r = Core.recordMarkdown({ brief: sBrief.data, revision: rev2, proposals: Core.sessionOf(round1).proposals, reviews: { advocate: "", skeptic: "", strategist: "" }, ballots: { advocate: { ranking: ["B", "A", "C"], scores: {} }, skeptic: { ranking: ["B", "C", "A"], scores: {} }, strategist: { ranking: ["A", "B", "C"], scores: {} } }, tally: T, decided: null, plan: "# Revised" } as unknown as RecordView);
   assert.ok(r.includes("## Your input on the round 1 plan\n\n> Why not reuse the job queue?\n> Also, exports must be audited."));
 });
-console.log(n + " tests passed" + (process.exitCode ? " (with failures)" : ""));
+
+// ---------- Conversations ----------
+t("reasoning between think tags is kept apart from the answer", () => {
+  assert.strictEqual(Core.thinkingOf("<think>Plan it.</think>\n# Answer"), "Plan it.");
+  assert.strictEqual(Core.thinkingOf("<THINK> a </THINK>b<think>c"), "a\n\nc", "several blocks, and one that never closed");
+  assert.strictEqual(Core.thinkingOf("<think> </think># Answer"), "");
+  assert.strictEqual(Core.thinkingOf("# Answer"), "");
+  assert.strictEqual(Core.stripThinking("<think>Plan it.</think>\n# Answer"), "# Answer");
+});
+t("usage reads as a short line", () => {
+  assert.strictEqual(Core.usageText({ turns: 1, inputTokens: 12345, outputTokens: 678, costUsd: 0.01234, durationMs: 9000 }), "1 turn \u00B7 12,345 tokens in, 678 out \u00B7 $0.0123");
+  assert.strictEqual(Core.usageText({ turns: 4, costUsd: 2.5 }), "4 turns \u00B7 $2.50");
+  assert.strictEqual(Core.usageText({ outputTokens: 10 }), "10 out");
+  assert.strictEqual(Core.usageText(null), "");
+  // @ts-expect-error: a count that isn't a number is left out
+  assert.strictEqual(Core.usageText({ turns: "3" }), "");
+});
+t("a tool call reads as the tool and what it was used on", () => {
+  assert.strictEqual(Core.toolLine({ name: "Read", detail: "src/app.js" }), "Read src/app.js");
+  assert.strictEqual(Core.toolLine({ name: "Glob" }), "Glob");
+  assert.strictEqual(Core.toolLine({}), "A tool");
+});
+t("a conversation becomes Markdown, every attempt and every turn", () => {
+  const failed = {
+    status: "error", error: { code: "bad_ballot", message: "The review ends without a readable ballot." }, agent: { provider: "claude-code", model: "opus" }, served: "claude-opus-5-5",
+    entries: [
+      { type: "prompt", text: "You are The Skeptic.\n```json\n{}\n```" },
+      { type: "thinking", text: "Check the queue." },
+      { type: "text", text: "Let me look." },
+      { type: "tool", name: "Read", detail: "src/jobs.py", input: { file_path: "/p/src/jobs.py" }, result: "def run(): pass", error: false },
+      { type: "tool", name: "Grep", detail: "TODO", input: { pattern: "TODO" }, result: "No such file", error: true },
+      { type: "tool", name: "Glob", detail: "*.py", input: { pattern: "*.py" }, result: null },
+      { type: "text", text: "## Verdict\nA.", final: true },
+    ],
+  };
+  const done = { status: "done", usage: { turns: 2 }, entries: [{ type: "prompt", text: "Again." }, { type: "event", name: "hermes.tool.progress", data: "{\"tool\":\"read_file\"}" }, { type: "text", text: "## Verdict\nB.", final: true }] };
+  const md = Core.conversationMarkdown([failed, done] as unknown as Transcript[], { title: "Review \u00B7 The Skeptic", who: "The Skeptic", agent: x => (x.served ? x.served + " via Claude Code" : "") });
+  assert.ok(md.startsWith("## Review \u00B7 The Skeptic\n\n### Attempt 1 of 2\n\n*claude-opus-5-5 via Claude Code \u00B7 Couldn't finish*\n\nIt couldn't finish: The review ends without a readable ballot.\n\n#### What Quorum sent\n\n````text\nYou are The Skeptic.\n```json\n{}\n```\n````"), md);
+  assert.ok(md.includes("#### The Skeptic thought\n\n```text\nCheck the queue.\n```"));
+  assert.ok(md.includes("#### The Skeptic wrote\n\nLet me look."));
+  assert.ok(md.includes('#### Read src/jobs.py\n\nInput:\n\n```json\n{\n  "file_path": "/p/src/jobs.py"\n}\n```\n\nWhat came back:\n\n```text\ndef run(): pass\n```'));
+  assert.ok(md.includes("#### Grep TODO\n\nInput:"), md);
+  assert.ok(md.includes("It failed:\n\n```text\nNo such file\n```"));
+  assert.ok(md.includes("#### Glob *.py\n\nInput:\n\n```json\n{\n  \"pattern\": \"*.py\"\n}\n```\n\n*Nothing came back.*"));
+  assert.ok(md.includes("#### The Skeptic\u2019s answer\n\n###### Verdict\nA."), "the agent's own headings go below the conversation's");
+  assert.ok(md.includes("### Attempt 2 of 2\n\n*Finished \u00B7 2 turns*"));
+  assert.ok(md.includes('#### hermes.tool.progress\n\n```text\n{"tool":"read_file"}\n```'));
+  const one = Core.conversationMarkdown([{ status: "stopped", rebuilt: true, entries: [{ type: "prompt", text: "P" }, { type: "text", text: "Half", partial: true }] }] as unknown as Transcript[], { title: "Plan", who: "The Chair" });
+  assert.ok(one.includes("*Stopped*\n\n*Rebuilt from the saved session:"));
+  assert.ok(one.includes("### What Quorum sent"), "a single attempt's turns go one level up");
+  assert.ok(one.includes("### What the Chair had written when it stopped\n\nHalf"));
+});

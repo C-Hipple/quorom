@@ -76,6 +76,7 @@
         <li id="stageReview" hidden><button type="button" class="stage-btn" data-stage="review" data-target="sec-review" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">4</span>Final review</span><span class="stage-state">Waiting</span></button></li>
         <li><button type="button" class="stage-btn" data-stage="plan" data-target="sec-plan" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">4</span>Final plan</span><span class="stage-state">Waiting</span></button></li>
       </ol>
+      <button type="button" class="rail-convo" id="railConvo" hidden>Every agent’s conversation</button>
       <div class="rail-foot">
         <p class="clock" id="clock"></p>
         <p class="save-state" id="saveState" role="status" hidden></p>
@@ -322,7 +323,7 @@
           <li><span class="badge is-ring" aria-hidden="true"></span><p><strong>The Security Reviewer</strong> checks the plan for security and privacy: access, data exposure, injection, secrets and abuse. The Chair then revises the plan to address both reviews.</p></li>
         </ul>
       </div>
-      <p class="roster-foot">A session makes seven requests: three proposals, three reviews and the plan. The council's questions add up to twelve more, three councilors questioning each proposal and each builder answering, and the final review three more. Each role runs on the agent you choose, so the builders can draft on a fast, cheap model while the council and the Chair decide on a frontier one. Inside claude.ai the agents run on Claude; opened on its own, Quorum can use OpenRouter, Hermes Agent or another OpenAI-compatible service, and run with <code>npm start</code>, it can use Claude Code working inside your project folder.</p>
+      <p class="roster-foot">A session makes seven requests: three proposals, three reviews and the plan. The council's questions add up to twelve more, three councilors questioning each proposal and each builder answering, and the final review three more. Each role runs on the agent you choose, so the builders can draft on a fast, cheap model while the council and the Chair decide on a frontier one. Inside claude.ai the agents run on Claude; opened on its own, Quorum can use OpenRouter, Hermes Agent or another OpenAI-compatible service, and run with <code>bun start</code>, it can use Claude Code working inside your project folder.</p>
     </section>
 
     <section class="stage-sec" id="sec-proposals" aria-labelledby="h-proposals" hidden>
@@ -359,7 +360,7 @@
         </button>
       </div>
       <div class="pane" role="tabpanel" id="propPane" aria-labelledby="tab-A" tabindex="0">
-        <p class="byline"><span id="propByline"></span><span class="tier" id="propTier" hidden></span></p>
+        <p class="byline"><span id="propByline"></span><span class="tier" id="propTier" hidden></span><button type="button" class="link-btn convo-link" id="propConvo" hidden>Full conversation</button></p>
         <article class="doc" id="propDoc"></article>
         <p class="pane-note" id="propNote" hidden></p>
         <details class="motion-context plan-draft" id="propDraft" hidden>
@@ -421,7 +422,7 @@
         </button>
       </div>
       <div class="pane" role="tabpanel" id="councilPane" aria-labelledby="tab-advocate" tabindex="0">
-        <p class="byline"><span id="councilByline"></span><span class="tier" id="councilTier" hidden></span></p>
+        <p class="byline"><span id="councilByline"></span><span class="tier" id="councilTier" hidden></span><button type="button" class="link-btn convo-link" id="councilConvo" hidden>Full conversation</button></p>
         <article class="doc" id="councilDoc"></article>
         <div id="ballot"></div>
         <p class="pane-note" id="councilNote" hidden></p>
@@ -456,7 +457,7 @@
         </button>
       </div>
       <div class="pane" role="tabpanel" id="reviewPane" aria-labelledby="tab-scaling" tabindex="0">
-        <p class="byline"><span id="reviewByline"></span><span class="tier" id="reviewTier" hidden></span></p>
+        <p class="byline"><span id="reviewByline"></span><span class="tier" id="reviewTier" hidden></span><button type="button" class="link-btn convo-link" id="reviewConvo" hidden>Full conversation</button></p>
         <article class="doc" id="reviewDoc"></article>
         <p class="pane-note" id="reviewNote" hidden></p>
       </div>
@@ -467,7 +468,7 @@
         <h2 class="sec-title" id="h-plan" tabindex="-1"><span class="sec-num">4</span>Final plan</h2>
       </div>
       <div class="plan" id="plan">
-        <p class="byline"><span id="planByline"></span><span class="tier" id="planTier" hidden></span></p>
+        <p class="byline"><span id="planByline"></span><span class="tier" id="planTier" hidden></span><button type="button" class="link-btn convo-link" id="planConvo" hidden>Full conversation</button></p>
         <article class="doc" id="planDoc"></article>
         <p class="pane-note" id="planNote" hidden></p>
         <details class="motion-context plan-draft" id="planDraft" hidden>
@@ -499,6 +500,28 @@
       <div class="rounds" id="roundsList"></div>
     </section>
   </main>
+</div>
+
+<div class="convo" id="convo" hidden>
+  <div class="convo-scrim" id="convoScrim"></div>
+  <section class="convo-panel" id="convoPanel" role="dialog" aria-modal="true" aria-labelledby="convoTitle" aria-describedby="convoMeta">
+    <div class="convo-head">
+      <h2 class="convo-title" id="convoTitle" tabindex="-1">Agent conversations</h2>
+      <button type="button" class="btn btn-quiet btn-small" id="convoClose">Close</button>
+    </div>
+    <div class="convo-pick">
+      <label class="visually-hidden" for="convoStep">Agent and step</label>
+      <select class="convo-step" id="convoStep"></select>
+      <button type="button" class="btn btn-quiet btn-small" id="convoPrev" aria-label="Previous step">Previous</button>
+      <button type="button" class="btn btn-quiet btn-small" id="convoNext" aria-label="Next step">Next</button>
+    </div>
+    <p class="convo-meta" id="convoMeta"></p>
+    <div class="convo-body" id="convoBody" tabindex="0" role="region" aria-label="Conversation"></div>
+    <div class="convo-foot">
+      <button type="button" class="btn btn-quiet btn-small" id="convoCopy">Copy as Markdown</button>
+      <button type="button" class="btn btn-quiet btn-small" id="convoSaveAll">Download every conversation</button>
+    </div>
+  </section>
 </div>
 
 <div class="notice" id="notice" role="alert" hidden>

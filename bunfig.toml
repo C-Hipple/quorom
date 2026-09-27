@@ -1,0 +1,3 @@
+[test]
+# Builds dist/quorum.html before the tests, so the in-page tests run the page as it is now.
+preload = ["./test/setup.ts"]

@@ -2,15 +2,19 @@
   "name": "quorum",
   "version": "1.1.0",
   "private": true,
+  "type": "module",
   "description": "Three AI builders propose implementations of a feature, a council of three votes, and a Chair writes the plan. Runs on Claude, OpenRouter, Hermes Agent or any OpenAI-compatible endpoint.",
   "scripts": {
-    "build": "node build.js",
-    "start": "node build.js && node serve.js",
-    "pretest": "node build.js",
-    "screenshots": "node build.js && node scripts/screenshots.js",
-    "test": "node test/graph.test.js && node test/core.test.js && node test/bridge.test.js && node test/providers.test.js && node test/local.test.js && node test/smoke.test.js"
+    "build": "bun build.ts",
+    "start": "bun build.ts && bun serve.ts",
+    "test": "bun test",
+    "typecheck": "tsc",
+    "screenshots": "bun build.ts && bun scripts/screenshots.ts"
   },
   "devDependencies": {
-    "jsdom": "^24.1.0"
+    "@types/bun": "^1.4.2",
+    "@types/jsdom": "^21.1.7",
+    "jsdom": "^24.1.0",
+    "typescript": "^7.0.2"
   }
 }

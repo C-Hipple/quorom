@@ -1,4 +1,4 @@
-// What each seat answers in the scripted session that scripts/screenshots.js records. It works the "CSV export for
+// What each seat answers in the scripted session that scripts/screenshots.ts records. It works the "CSV export for
 // reports" example on the page. The builders and the council are written so that A and B tie on points and B wins on
 // first-place votes, which shows the tie-break, and the Skeptic ranks the winner last, which shows the Dissent section.
 
@@ -99,7 +99,7 @@ This is the most work, about four weeks, and it adds a new app, a queue and poss
 ## Why the council should choose this
 Exports will grow. This design keeps them from leaking into \`ReportService\`, isolates their load, and makes them observable from day one.`;
 
-const ballot = (ranking, scores) => fence + "json\n" + JSON.stringify({ ranking, scores }) + "\n" + fence;
+const ballot = (ranking: string[], scores: Record<string, number>) => fence + "json\n" + JSON.stringify({ ranking, scores }) + "\n" + fence;
 
 const advocate = `## Verdict
 B gives users the best experience of the three: one predictable way to export, visible progress, and an email that arrives without anyone having to guess which kind of export they started. A meets the requirements too, but its behavior changes as a report grows. C serves the team more than the users.
@@ -210,4 +210,5 @@ Ship behind a feature flag, first to internal users, then to 10% of workspaces, 
 ## Dissent
 The Skeptic ranked this proposal last, arguing that routing every export through a shared Celery broker lets one backlog slow them all, with nobody alerted. The concern is fair. The plan answers it with a dedicated queue, per-user limits and an alert on queue time, taken from Proposal C, while keeping B's single, predictable path for users.`;
 
-module.exports = { A, B, C, advocate, skeptic, strategist, chair };
+// Each seat's answer, by seat.
+export const answers: Record<string, string> = { A, B, C, advocate, skeptic, strategist, chair };

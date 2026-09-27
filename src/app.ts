@@ -1,3 +1,106 @@
+import type { FolderInfo } from "../bridge";
+import type { Session } from "../sessions";
+import { Core, type Agent, type AgentStep, type Agents, type Ballot, type Brief, type Entry, type FinalData, type ModelChoice, type PlanData, type Project, type Role, type Tally, type Transcript } from "./core";
+import { Graph, type Handoffs, type Task } from "./graph";
+import { Providers, type ProviderConfig, type SampleFn, type TraceKind } from "./providers";
+
+// What claude.ai gives a page it hosts, and what the tests look for.
+declare global {
+  interface Window {
+    claude?: { use(name: string): unknown };
+    __QUORUM_TEST__?: boolean;
+    __quorum?: unknown;
+  }
+}
+
+type Phase = "idle" | "running" | "paused" | "stopped" | "blocked" | "done";
+type SeatStatus = "idle" | "thinking" | "writing" | "done" | "error" | "stopped";
+type Section = "proposals" | "questions" | "council" | "vote" | "review" | "plan";
+
+// An agent step as the page shows it running. What it finished with is in its handoff.
+interface Seat {
+  status: SeatStatus;
+  text: string;
+  error: { code: string, message?: string } | null;
+  truncated: boolean;
+  ctl: AbortController | null;
+  agent: Agent | null;
+  served: string;
+  activity: string;
+  skipped: boolean;
+}
+
+// What stops the chosen agents from running here. See checkAgents.
+interface AgentsProblem {
+  message: string;
+  focus?: HTMLElement;
+  openProviders?: boolean;
+  project?: boolean;
+}
+
+// What Quorum's local server says about itself, from GET /api/local.
+interface LocalInfo {
+  claudeCode: { available: boolean, version: string | null };
+  sessions: { file: string } | null;
+  project: string | null;
+  home: string;
+}
+
+// The claude.ai capability that saves a file for the viewer.
+interface Downloads {
+  save(o: { filename: string, data: string }): Promise<{ status?: string } | null | undefined>;
+}
+
+// A piece of context in the form.
+interface ContextField {
+  id: string;
+  kind: string;
+  title: string;
+  text: string;
+  el: HTMLDivElement;
+  titleEl: HTMLInputElement;
+  textEl: HTMLTextAreaElement;
+  removeEl: HTMLButtonElement;
+  sizeEl: HTMLElement;
+  labelEl: HTMLLabelElement;
+}
+
+interface FormSnapshot {
+  feature: string;
+  context: { kind: string, title?: string, text?: string }[];
+}
+
+// A step of a round, for the conversation viewer.
+interface ConvoStep {
+  round: number;
+  node: string;
+}
+
+// A transcript this page is writing, with the session it's saved to.
+type LiveTranscript = Transcript & { sid?: string | null };
+
+// One turn of a conversation in the viewer. See convoBlocks.
+interface Block {
+  id: string;
+  sig: string;
+  live?: boolean;
+  html(): string;
+  after?(el: Element): void;
+}
+
+// What the page keeps on an element it draws into, so it's drawn again only when what it shows changes.
+interface Drawn {
+  _html?: string;
+  _key?: string;
+  _session?: number;
+  _id?: string;
+  _sig?: string;
+  _flash?: ReturnType<typeof setTimeout>;
+}
+
+// A thrown error as the page reads it: a provider's { code, message, text }, or anything else.
+type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | undefined;
+
 (function (Core, Graph) {
   "use strict";
 
@@ -5,7 +108,7 @@
   const TIERS = Core.TIERS, ROLES = Core.ROLES, LENGTHS = Core.LENGTHS, PROVIDERS = Core.PROVIDERS;
   // Inside claude.ai the page gets the Claude runtime but can't reach other services; on its own it's the reverse.
   const INSIDE = !!(window.claude && typeof window.claude.use === "function");
-  // Served by Quorum's local server (serve.js), the page can also choose a project folder and run Claude Code in it.
+  // Served by Quorum's local server (serve.ts), the page can also choose a project folder and run Claude Code in it.
   const ON_WEB = !INSIDE && /^https?:$/.test(location.protocol);
   const COUNCIL_IDS = COUNCIL.map(c => c.id);
   const REVIEWERS = Core.REVIEWERS, REVIEWER_IDS = Core.REVIEWER_IDS;
@@ -15,23 +118,23 @@
   const ASK_IDS = Core.ASK_IDS, AMEND_IDS = Core.AMEND_IDS, askId = Core.askId, amendId = Core.amendId;
   const SEAT_IDS = LETTERS.concat(COUNCIL_IDS, ["chair"]);
   const ALL_IDS = SEAT_IDS.concat(ASK_IDS, AMEND_IDS, REVIEWER_IDS, ["final"]);
-  const CAST = {};
+  const CAST: Record<string, { name: string }> = {};
   ALL_IDS.forEach(id => { CAST[id] = Core.stepOf(id).cast; });
-  const isBuilder = id => LETTERS.indexOf(id) >= 0;
-  const isCouncil = id => COUNCIL_IDS.indexOf(id) >= 0;
-  const isReviewer = id => REVIEWER_IDS.indexOf(id) >= 0;
-  const isAsk = id => ASK_IDS.indexOf(id) >= 0;
-  const isAmend = id => AMEND_IDS.indexOf(id) >= 0;
+  const isBuilder = (id: string) => LETTERS.indexOf(id) >= 0;
+  const isCouncil = (id: string) => COUNCIL_IDS.indexOf(id) >= 0;
+  const isReviewer = (id: string) => REVIEWER_IDS.indexOf(id) >= 0;
+  const isAsk = (id: string) => ASK_IDS.indexOf(id) >= 0;
+  const isAmend = (id: string) => AMEND_IDS.indexOf(id) >= 0;
 
   // A step's name where the page says it couldn't finish.
-  function stepName(id) {
+  function stepName(id: string): string {
     const st = Core.stepOf(id);
     if (isAsk(id)) return st.cast.name + "'s questions on Proposal " + st.letter;
     if (isAmend(id)) return st.cast.name + "'s answers to the council";
     return st.cast.name;
   }
 
-  const EXAMPLES = [
+  const EXAMPLES: FormSnapshot[] = [
     {
       feature: "Add optional two-factor authentication to sign-in, using an authenticator app, with backup codes for account recovery.",
       context: [
@@ -55,7 +158,7 @@
     },
   ];
 
-  const CONTEXT_KINDS = {
+  const CONTEXT_KINDS: Record<string, { title: string, placeholder: string, code?: boolean }> = {
     requirements: { title: "Product requirements", placeholder: "Paste the requirements, user stories or acceptance criteria." },
     today: { title: "How it works today", placeholder: "Describe the parts of the system this touches: the stack, services, data model and how the current flow works." },
     constraints: { title: "Constraints", placeholder: "Deadlines, team size, performance or compliance needs, and anything that can't change." },
@@ -66,7 +169,7 @@
 
   // kind: fatal = Claude can't be used in this view; stop = needs a change first; retry = the viewer may retry.
   // {provider} and {hint} are filled in from the seat that failed.
-  const ERRORS = {
+  const ERRORS: Record<string, { kind: "fatal" | "stop" | "retry", msg: string, short: string }> = {
     not_granted: { kind: "fatal", msg: "Claude access was declined for this page. Reload the page to be asked again.", short: "Claude access was declined for this page." },
     sampling_disabled: { kind: "fatal", msg: "Claude isn't available for this account, so the council can't meet.", short: "Claude isn't available for this account." },
     not_declared: { kind: "fatal", msg: "This page can no longer reach Claude. Reload it to try again.", short: "This page can't reach Claude." },
@@ -93,9 +196,9 @@
     project_missing: { kind: "retry", msg: "Claude Code couldn't open the project folder. Check that it's still there, then retry.", short: "Claude Code couldn't open the project folder." },
     claude_code_missing: { kind: "retry", msg: "Quorum's server couldn't find Claude Code. Install it, or restart the server with QUORUM_CLAUDE_BIN set to its path, then retry.", short: "Quorum's server couldn't find Claude Code." },
   };
-  const errInfo = code => ERRORS[code] || ERRORS.upstream_error;
+  const errInfo = (code: string) => ERRORS[code] || ERRORS.upstream_error;
   // Where a provider needs other advice than the general message.
-  const PROVIDER_ERRORS = {
+  const PROVIDER_ERRORS: Record<string, Record<string, { msg: string, short: string }>> = {
     "claude-code": {
       auth_failed: { msg: "Claude Code isn't signed in. Run claude in a terminal and sign in, then retry.", short: "Claude Code isn't signed in." },
     },
@@ -105,18 +208,18 @@
     return /^https?:$/.test(location.protocol) ? location.origin : "";
   }
 
-  function unreachableHint(provider) {
+  function unreachableHint(provider: string | null | undefined): string {
     const origin = pageOrigin();
     if (provider === "hermes") {
       return "Check that hermes gateway is running" + (origin ? " and that API_SERVER_CORS_ORIGINS includes " + origin : ", and open Quorum from a local web server so Hermes can allow it") + ", then retry.";
     }
     if (provider === "custom") return "Check the address, and that the service accepts requests from this page, then retry.";
-    if (provider === "claude-code") return "Check that Quorum's server, which npm start runs, is still running, then retry.";
+    if (provider === "claude-code") return "Check that Quorum's server, which bun start runs, is still running, then retry.";
     return "Check your internet connection, then retry.";
   }
 
   // An error's message, with the provider of the seat that failed filled in.
-  function errText(code, seat, field) {
+  function errText(code: string, seat: { agent?: Agent | null, error?: { message?: string } | null } | null | undefined, field?: "msg" | "short"): string {
     const agent = seat && seat.agent;
     const info = (agent && PROVIDER_ERRORS[agent.provider] && PROVIDER_ERRORS[agent.provider][code]) || errInfo(code);
     const provider = agent ? PROVIDERS[agent.provider].label : "Claude";
@@ -128,19 +231,20 @@
       .replace(/^the endpoint/, "The endpoint");
   }
 
-  const STAGE_WORDS = { waiting: "Waiting", active: "In progress", done: "Done", paused: "Paused", stopped: "Stopped", tied: "Tied" };
+  const STAGE_WORDS: Record<string, string> = { waiting: "Waiting", active: "In progress", done: "Done", paused: "Paused", stopped: "Stopped", tied: "Tied" };
 
   /* ---------- Elements ---------- */
 
-  const $ = id => document.getElementById(id);
+  // Every element the page looks up by id is in the page, which is parsed before the script runs.
+  const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
   const els = {
-    feature: $("feature"), featureNote: $("featureNote"), convene: $("convene"), resume: $("resume"),
-    exampleNote: $("exampleNote"), undoExample: $("undoExample"), contextCount: $("contextCount"), contextNote: $("contextNote"),
-    context: $("context"), addFiles: $("addFiles"), fileInput: $("fileInput"),
-    motionContext: $("motionContext"), motionContextSummary: $("motionContextSummary"), motionContextBody: $("motionContextBody"),
+    feature: $<HTMLTextAreaElement>("feature"), featureNote: $("featureNote"), convene: $<HTMLButtonElement>("convene"), resume: $<HTMLButtonElement>("resume"),
+    exampleNote: $("exampleNote"), undoExample: $<HTMLButtonElement>("undoExample"), contextCount: $("contextCount"), contextNote: $("contextNote"),
+    context: $("context"), addFiles: $<HTMLButtonElement>("addFiles"), fileInput: $<HTMLInputElement>("fileInput"),
+    motionContext: $<HTMLDetailsElement>("motionContext"), motionContextSummary: $("motionContextSummary"), motionContextBody: $("motionContextBody"),
     settingsHint: $("settingsHint"), tierNote: $("tierNote"), agentsNote: $("agentsNote"), roster: $("roster"),
-    providers: $("providers"), providersStatus: $("providersStatus"), providersIntro: $("providersIntro"), helpHermes: $("help-hermes"),
-    status: $("status"), clock: $("clock"), railStop: $("railStop"),
+    providers: $<HTMLDetailsElement>("providers"), providersStatus: $("providersStatus"), providersIntro: $("providersIntro"), helpHermes: $("help-hermes"),
+    status: $("status"), clock: $("clock"), railStop: $<HTMLButtonElement>("railStop"),
     secProposals: $("sec-proposals"), secCouncil: $("sec-council"), secVote: $("sec-vote"), secPlan: $("sec-plan"),
     motionQuote: $("motionQuote"), propCount: $("propCount"), propPane: $("propPane"), propByline: $("propByline"),
     propDoc: $("propDoc"), propNote: $("propNote"), propTier: $("propTier"), councilTier: $("councilTier"), planTier: $("planTier"),
@@ -148,52 +252,77 @@
     councilDoc: $("councilDoc"), ballot: $("ballot"), councilNote: $("councilNote"),
     division: $("division"), verdict: $("verdict"),
     plan: $("plan"), planByline: $("planByline"), planDoc: $("planDoc"), planNote: $("planNote"),
-    planActions: $("planActions"), copyPlan: $("copyPlan"), dlPlan: $("dlPlan"), dlRecord: $("dlRecord"),
-    notice: $("notice"), noticeText: $("noticeText"), noticeRetry: $("noticeRetry"), noticeDismiss: $("noticeDismiss"),
-    project: $("project"), projectPath: $("projectPath"), projectBrowse: $("projectBrowse"), projectStatus: $("projectStatus"),
+    planActions: $("planActions"), copyPlan: $<HTMLButtonElement>("copyPlan"), dlPlan: $<HTMLButtonElement>("dlPlan"), dlRecord: $<HTMLButtonElement>("dlRecord"),
+    notice: $("notice"), noticeText: $("noticeText"), noticeRetry: $<HTMLButtonElement>("noticeRetry"), noticeDismiss: $<HTMLButtonElement>("noticeDismiss"),
+    project: $("project"), projectPath: $<HTMLInputElement>("projectPath"), projectBrowse: $<HTMLButtonElement>("projectBrowse"), projectStatus: $("projectStatus"),
     projectBrowser: $("projectBrowser"), projectWhere: $("projectWhere"), projectDirs: $("projectDirs"), motionProject: $("motionProject"),
     statusClaudeCode: $("status-claude-code"),
-    sessions: $("sessions"), sessionsStatus: $("sessionsStatus"), sessionsIntro: $("sessionsIntro"), sessionList: $("sessionList"),
+    sessions: $<HTMLDetailsElement>("sessions"), sessionsStatus: $("sessionsStatus"), sessionsIntro: $("sessionsIntro"), sessionList: $("sessionList"),
     saveState: $("saveState"), motionRound: $("motionRound"), motionRoundIntro: $("motionRoundIntro"), motionRoundQuote: $("motionRoundQuote"),
-    revise: $("revise"), reviseInput: $("reviseInput"), reviseNote: $("reviseNote"), reviseBtn: $("reviseBtn"),
+    revise: $("revise"), reviseInput: $<HTMLTextAreaElement>("reviseInput"), reviseNote: $("reviseNote"), reviseBtn: $<HTMLButtonElement>("reviseBtn"),
     secRounds: $("sec-rounds"), roundsList: $("roundsList"),
-    reviewOn: $("reviewOn"), rowReview: $("row-review"), stageReview: $("stageReview"), questionsOn: $("questionsOn"), stageQuestions: $("stageQuestions"),
+    reviewOn: $<HTMLInputElement>("reviewOn"), rowReview: $("row-review"), stageReview: $("stageReview"), questionsOn: $<HTMLInputElement>("questionsOn"), stageQuestions: $("stageQuestions"),
     secQuestions: $("sec-questions"), questionsCount: $("questionsCount"), questionsPane: $("questionsPane"), questionsDoc: $("questionsDoc"),
-    propDraft: $("propDraft"), propDraftDoc: $("propDraftDoc"),
+    propDraft: $<HTMLDetailsElement>("propDraft"), propDraftDoc: $("propDraftDoc"),
     secReview: $("sec-review"), reviewCount: $("reviewCount"), reviewPane: $("reviewPane"), reviewByline: $("reviewByline"),
-    reviewTier: $("reviewTier"), reviewDoc: $("reviewDoc"), reviewNote: $("reviewNote"), planDraft: $("planDraft"), planDraftDoc: $("planDraftDoc"),
+    reviewTier: $("reviewTier"), reviewDoc: $("reviewDoc"), reviewNote: $("reviewNote"), planDraft: $<HTMLDetailsElement>("planDraft"), planDraftDoc: $("planDraftDoc"),
+    propConvo: $<HTMLButtonElement>("propConvo"), councilConvo: $<HTMLButtonElement>("councilConvo"), reviewConvo: $<HTMLButtonElement>("reviewConvo"), planConvo: $<HTMLButtonElement>("planConvo"), railConvo: $<HTMLButtonElement>("railConvo"),
+    convo: $("convo"), convoScrim: $("convoScrim"), convoPanel: $("convoPanel"), convoTitle: $("convoTitle"), convoClose: $<HTMLButtonElement>("convoClose"),
+    convoStep: $<HTMLSelectElement>("convoStep"), convoPrev: $<HTMLButtonElement>("convoPrev"), convoNext: $<HTMLButtonElement>("convoNext"), convoMeta: $("convoMeta"), convoBody: $("convoBody"),
+    convoCopy: $<HTMLButtonElement>("convoCopy"), convoSaveAll: $<HTMLButtonElement>("convoSaveAll"),
   };
-  const providerSelects = {}, tierSelects = {}, modelFields = {};
+  const providerSelects: Record<string, HTMLSelectElement> = {}, tierSelects: Record<string, HTMLSelectElement> = {};
+  const modelFields: Record<string, HTMLInputElement> = {};
   ROLES.forEach(r => {
-    providerSelects[r.id] = $("provider-" + r.id);
-    tierSelects[r.id] = $("tier-" + r.id);
-    modelFields[r.id] = $("model-" + r.id);
+    providerSelects[r.id] = $<HTMLSelectElement>("provider-" + r.id);
+    tierSelects[r.id] = $<HTMLSelectElement>("tier-" + r.id);
+    modelFields[r.id] = $<HTMLInputElement>("model-" + r.id);
   });
-  const credFields = {
-    keys: { openrouter: $("key-openrouter"), hermes: $("key-hermes"), custom: $("key-custom") },
-    urls: { hermes: $("url-hermes"), custom: $("url-custom") },
-    remember: { openrouter: $("remember-openrouter"), hermes: $("remember-hermes"), custom: $("remember-custom") },
+  const credFields: Record<"keys" | "urls" | "remember", Record<string, HTMLInputElement>> = {
+    keys: { openrouter: $<HTMLInputElement>("key-openrouter"), hermes: $<HTMLInputElement>("key-hermes"), custom: $<HTMLInputElement>("key-custom") },
+    urls: { hermes: $<HTMLInputElement>("url-hermes"), custom: $<HTMLInputElement>("url-custom") },
+    remember: { openrouter: $<HTMLInputElement>("remember-openrouter"), hermes: $<HTMLInputElement>("remember-hermes"), custom: $<HTMLInputElement>("remember-custom") },
   };
-  const providerSets = { openrouter: $("set-openrouter"), hermes: $("set-hermes"), custom: $("set-custom") };
+  const providerSets: Record<string, HTMLFieldSetElement> = { openrouter: $<HTMLFieldSetElement>("set-openrouter"), hermes: $<HTMLFieldSetElement>("set-hermes"), custom: $<HTMLFieldSetElement>("set-custom") };
   const EXTERNAL = ["openrouter", "hermes", "custom"];
-  const lengthInputs = Array.prototype.slice.call(document.querySelectorAll('input[name="length"]'));
-  const exampleBtns = Array.prototype.slice.call(document.querySelectorAll(".example"));
-  const addBtns = Array.prototype.slice.call(document.querySelectorAll(".add-btn"));
-  const stageBtns = Array.prototype.slice.call(document.querySelectorAll(".stage-btn"));
-  const seatEls = {};
-  SEAT_IDS.forEach(id => { seatEls[id] = document.querySelector('[data-seat="' + id + '"]'); });
+  const lengthInputs: HTMLInputElement[] = Array.prototype.slice.call(document.querySelectorAll('input[name="length"]'));
+  const exampleBtns: HTMLElement[] = Array.prototype.slice.call(document.querySelectorAll(".example"));
+  const addBtns: HTMLButtonElement[] = Array.prototype.slice.call(document.querySelectorAll(".add-btn"));
+  const stageBtns: HTMLButtonElement[] = Array.prototype.slice.call(document.querySelectorAll(".stage-btn"));
+  const seatEls: Record<string, SVGGElement> = {};
+  SEAT_IDS.forEach(id => { seatEls[id] = document.querySelector('[data-seat="' + id + '"]') as SVGGElement; });
   const reduceMotion = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
 
   const store = {
-    get(k) { try { return window.localStorage.getItem(k); } catch (_) { return null; } },
-    set(k, v) { try { window.localStorage.setItem(k, v); } catch (_) { /* storage unavailable */ } },
-    remove(k) { try { window.localStorage.removeItem(k); } catch (_) { /* storage unavailable */ } },
+    get(k: string) { try { return window.localStorage.getItem(k); } catch (_) { return null; } },
+    set(k: string, v: string) { try { window.localStorage.setItem(k, v); } catch (_) { /* storage unavailable */ } },
+    remove(k: string) { try { window.localStorage.removeItem(k); } catch (_) { /* storage unavailable */ } },
   };
 
   /* ---------- State ---------- */
 
-  const S = {
-    phase: "idle", // idle | running | paused | stopped | blocked | done
+  const S: {
+    phase: Phase,
+    token: number,
+    session: number,
+    handoffs: Handoffs,
+    round: number,
+    past: Handoffs[],
+    sessionId: string | null,
+    agents: Agents,
+    seats: Record<string, Seat>,
+    revealed: Record<Section, boolean>,
+    sel: { proposals: string, questions: string, council: string, review: string },
+    clock: { startedAt: number, accumulated: number },
+    notice: { text: string, retry: boolean } | null,
+    canRetry: boolean,
+    blockedCode: string,
+    heard: boolean,
+    connecting: boolean,
+    convenedAt: number,
+    stoppedAt: number,
+  } = {
+    phase: "idle",
     token: 0,
     session: 0,
     handoffs: {}, // node id to frozen handoff, for each step of this round that has finished
@@ -213,12 +342,12 @@
     convenedAt: 0,
     stoppedAt: 0,
   };
-  let sampleFn = null;
-  let sampleState = "pending"; // pending | ready | none | blocked
-  let downloadsNS = null;
-  let clockTimer = 0;
+  let sampleFn: SampleFn | null = null;
+  let sampleState: "pending" | "ready" | "none" | "blocked" = "pending";
+  let downloadsNS: Downloads | null = null;
+  let clockTimer: ReturnType<typeof setInterval> | 0 = 0;
 
-  function freshSeat() {
+  function freshSeat(): Seat {
     return { status: "idle", text: "", error: null, truncated: false, ctl: null, agent: null, served: "", activity: "", skipped: false };
   }
   function resetSeats() {
@@ -226,11 +355,11 @@
   }
   resetSeats();
 
-  if (window.__QUORUM_TEST__) window.__quorum = { S, saved: () => saved.queue };
+  if (window.__QUORUM_TEST__) window.__quorum = { S, saved: () => saved.queue, convos: () => convos };
 
   /* ---------- Capabilities ---------- */
 
-  function useCapability(name) {
+  function useCapability(name: string): Promise<unknown> {
     const c = window.claude;
     if (!c || typeof c.use !== "function") return Promise.resolve(null);
     try {
@@ -241,31 +370,31 @@
   }
 
   const sampleReady = useCapability("sample").then(fn => {
-    sampleFn = typeof fn === "function" ? fn : null;
+    sampleFn = typeof fn === "function" ? fn as SampleFn : null;
     if (sampleState === "pending") sampleState = sampleFn ? "ready" : "none";
     schedule();
     return sampleFn;
   });
 
   // What Quorum's local server says: { claudeCode: { available, version }, project, home }, or null without one.
-  let local = null;
-  let localState = ON_WEB ? "pending" : "none"; // pending | ready | none
-  function localUrl(route) {
+  let local: LocalInfo | null = null;
+  let localState: "pending" | "ready" | "none" = ON_WEB ? "pending" : "none";
+  function localUrl(route: string): string {
     return location.origin + "/api/" + route;
   }
-  const localReady = ON_WEB && typeof fetch === "function" ?
+  const localReady: Promise<LocalInfo | null> = ON_WEB && typeof fetch === "function" ?
     fetch(localUrl("local")).then(r => (r.ok ? r.json() : null)).then(o => (o && o.claudeCode ? o : null), () => null) :
     Promise.resolve(null);
 
   useCapability("downloads").then(ns => {
-    downloadsNS = ns && typeof ns.save === "function" ? ns : null;
+    downloadsNS = ns && typeof (ns as Downloads).save === "function" ? ns as Downloads : null;
     schedule();
   });
 
   /* ---------- Derived values ---------- */
 
-  function currentAgents() {
-    const a = {};
+  function currentAgents(): Agents {
+    const a: Agents = {};
     ROLES.forEach(r => {
       const provider = providerSelects[r.id].value;
       a[r.id] = { provider, model: provider === "claude" ? tierSelects[r.id].value : modelFields[r.id].value.trim() };
@@ -274,29 +403,29 @@
   }
 
   // The roles a session uses: the review role only with a final review.
-  function activeRoles(review) {
+  function activeRoles(review: boolean): Role[] {
     return ROLES.filter(r => !r.optional || review);
   }
 
   // Whether the session has a final review, and the council's questions: as chosen before it convenes, and as it
   // was convened after.
-  function reviewing() {
+  function reviewing(): boolean {
     return S.phase === "idle" ? els.reviewOn.checked : !!brief().review;
   }
-  function questioning() {
+  function questioning(): boolean {
     return S.phase === "idle" ? els.questionsOn.checked : !!brief().questions;
   }
 
-  function usesClaude(agents, review) {
+  function usesClaude(agents: Agents, review: boolean): boolean {
     return activeRoles(review).some(r => agents[r.id].provider === "claude");
   }
 
-  const ROLE_WORDS = { builders: "the builders", council: "the council", chair: "the Chair", review: "the final review" };
+  const ROLE_WORDS: Record<string, string> = { builders: "the builders", council: "the council", chair: "the Chair", review: "the final review" };
 
   // What stops these agents from running here, if anything: { message, focus, openProviders, project }, where project
   // says the message belongs with the project folder. project is the folder the session works in, resuming says the
   // session has already started, with or without one, and review says whether it has a final review.
-  function checkAgents(agents, project, resuming, review) {
+  function checkAgents(agents: Agents, project: Project | null | undefined, resuming: boolean, review: boolean): AgentsProblem | null {
     const roles = activeRoles(review);
     for (let i = 0; i < roles.length; i++) {
       const role = roles[i].id, a = agents[role], who = ROLE_WORDS[role];
@@ -310,7 +439,7 @@
         return { message: PROVIDERS[a.provider].label + " only works when Quorum is open outside Claude, because pages published on Claude can't reach other services. Choose Claude for " + who + ", or open the downloaded file.", focus: providerSelects[role] };
       }
       if (a.provider === "claude-code") {
-        if (!local) return { message: "Claude Code runs through Quorum's local server. Start it with npm start and open Quorum at the address it prints, or choose another provider for " + who + ".", focus: providerSelects[role] };
+        if (!local) return { message: "Claude Code runs through Quorum's local server. Start it with bun start and open Quorum at the address it prints, or choose another provider for " + who + ".", focus: providerSelects[role] };
         if (!local.claudeCode.available) return { message: "Quorum's server couldn't find Claude Code. Install it, or restart the server with QUORUM_CLAUDE_BIN set to its path, or choose another provider for " + who + ".", focus: providerSelects[role], openProviders: true };
         if (!project) {
           return resuming ?
@@ -327,12 +456,12 @@
     return null;
   }
 
-  function showAgentsNote(text) {
+  function showAgentsNote(text: string) {
     els.agentsNote.textContent = text;
     els.agentsNote.hidden = !text;
   }
 
-  function showAgentsProblem(problem) {
+  function showAgentsProblem(problem: AgentsProblem) {
     if (problem.project) {
       proj.note = problem.message;
       render();
@@ -342,17 +471,17 @@
     if (problem.openProviders) els.providers.open = true;
     if (problem.focus) problem.focus.focus();
   }
-  function currentLength() {
+  function currentLength(): string {
     const c = lengthInputs.filter(i => i.checked)[0];
     return c && LENGTHS[c.value] ? c.value : "standard";
   }
   // The seat holding the current version of proposal L: its builder's adjustment, once that starts to arrive.
-  function proposalSeatId(L) {
+  function proposalSeatId(L: string): string {
     const a = S.seats[amendId(L)];
     return !a.skipped && (a.text || a.status === "done") ? amendId(L) : L;
   }
-  function proposalsMap() {
-    const o = {};
+  function proposalsMap(): Record<string, string> {
+    const o: Record<string, string> = {};
     LETTERS.forEach(L => { o[L] = S.seats[proposalSeatId(L)].text; });
     return o;
   }
@@ -360,27 +489,27 @@
     return Core.titlesOf(proposalsMap());
   }
   // Finished results are read from the handoffs; seats only track each agent's progress and streamed words.
-  const NO_BRIEF = { feature: "", context: [], length: "standard" };
-  function handedOff(id) {
+  const NO_BRIEF: Brief = { feature: "", context: [], length: "standard" };
+  function handedOff(id: string) {
     return S.handoffs[id] ? S.handoffs[id].data : null;
   }
-  function brief() {
+  function brief(): Brief {
     return handedOff("brief") || NO_BRIEF;
   }
   // The plan the session ends with: the Chair's revision after a final review, or else its plan.
-  function planHandoff() {
+  function planHandoff(): PlanData | FinalData | null {
     return brief().review ? handedOff("final") : handedOff("chair");
   }
-  function tally() {
+  function tally(): Tally | null {
     return handedOff("tally");
   }
-  function decided() {
+  function decided(): string | null {
     return handedOff("chair") ? handedOff("chair").decided : null;
   }
-  function ballotOf(id) {
+  function ballotOf(id: string): Ballot | null {
     return handedOff(id) ? handedOff(id).ballot : null;
   }
-  function winnerLetter() {
+  function winnerLetter(): string | null {
     const t = tally();
     return t ? (t.winner || decided() || null) : null;
   }
@@ -444,6 +573,7 @@
     S.session += 1;
     const tok = S.token;
     resetSeats();
+    resetConvos(false);
     S.phase = "running";
     S.handoffs = {
       brief: Graph.handoff("brief", "brief", { feature, context: contextForSession(), length: currentLength(), project, questions: els.questionsOn.checked, review }),
@@ -469,7 +599,7 @@
   }
 
   // Runs the session graph on from the handoffs already made, so a retry or resume redoes only what's missing.
-  async function run(tok) {
+  async function run(tok: number) {
     const graph = Core.graphFor(brief());
     const res = await Graph.run(graph, {
       done: S.handoffs,
@@ -493,10 +623,11 @@
     S.phase = "done";
     pauseClock();
     saveSession();
+    saveState();
     schedule();
   }
 
-  function work(task, tok) {
+  function work(task: Task, tok: number) {
     const step = Core.STEPS[task.kind];
     if (!step) throw new Error("No worker handles " + task.kind + " steps.");
     if (step.compute) return step.compute(task);
@@ -510,12 +641,12 @@
     return askAgent(task, step, tok);
   }
 
-  function sectionOf(id) {
+  function sectionOf(id: string): Section {
     return isBuilder(id) ? "proposals" : isAsk(id) || isAmend(id) ? "questions" : isCouncil(id) ? "council" : isReviewer(id) ? "review" : "plan";
   }
 
   // An agent step: the seat's agent writes from the task's inputs alone, and the seat shows it writing.
-  async function askAgent(task, step, tok) {
+  async function askAgent(task: Task, step: AgentStep, tok: number) {
     const id = task.node, seat = S.seats[id];
     const ctl = new AbortController();
     seat.status = "thinking";
@@ -523,19 +654,21 @@
     seat.error = null;
     seat.truncated = false;
     seat.ctl = ctl;
-    const agent = S.agents[Core.roleOf(id)];
-    const project = task.inputs.brief.data.project || null;
+    const agent = S.agents[Core.roleOf(id) as string];
+    const project: Project | null = task.inputs.brief.data.project || null;
     seat.agent = agent;
     seat.served = "";
     seat.activity = "";
     S.revealed[sectionOf(id)] = true;
     schedule();
     const live = () => tok === S.token && seat.ctl === ctl;
+    let t: LiveTranscript | null = null;
     try {
       // Claude Code works inside the project folder. Hermes Agent has tools of its own and may be able to read the
       // project. The others only see the prompt.
       const kind = PROVIDERS[agent.provider];
       const prompt = step.prompt(task, { explore: !!kind.agentic, inProject: !!(kind.local && project) });
+      t = startTranscript(id, agent, prompt, kind.local && project ? project.path : "");
       if (agent.provider === "claude" && Core.utf8Len(prompt) > 64000) throw { code: "prompt_too_large", message: "Prompt over the size limit." };
       const res = await Providers.run(agent, prompt, {
         sample: sampleFn,
@@ -557,18 +690,23 @@
           seat.activity = activityOf(data);
           schedule();
         },
+        onTrace: (kind, data) => { if (live()) traceInto(t as LiveTranscript, kind, data); },
       });
       if (!live()) throw { code: "cancelled", message: "Stopped." };
       seat.text = String((res && res.text) || seat.text);
       seat.truncated = !!(res && res.truncated);
       seat.served = (res && res.served) || agent.model;
-      return Object.assign(step.result(task, seat.text), {
+      answered(t, seat.text, seat.served, seat.truncated);
+      const data = Object.assign(step.result(task, seat.text), {
         truncated: seat.truncated,
         agent: { provider: agent.provider, model: agent.model },
         served: seat.served,
       });
-    } catch (e) {
+      closeTranscript(t, null);
+      return data;
+    } catch (e: any) {
       if (live()) failSeat(seat, e);
+      if (t) closeTranscript(t, live() ? e : { code: "cancelled", message: "Stopped.", text: e && e.text });
       throw e;
     } finally {
       if (seat.ctl === ctl) seat.ctl = null;
@@ -576,7 +714,7 @@
     }
   }
 
-  function failSeat(seat, e) {
+  function failSeat(seat: Seat, e: Thrown) {
     const code = e && typeof e.code === "string" ? e.code : "upstream_error";
     if (code === "cancelled") {
       seat.status = "stopped";
@@ -594,21 +732,22 @@
   }
 
   // When seats couldn't finish: pause, and say why.
-  function settle(failed) {
+  function settle(failed: string[]) {
     const RANK = { fatal: 3, stop: 2, retry: 1 };
-    let worst = null;
+    let worst = null as string | null;
     failed.forEach(id => {
-      const code = (S.seats[id].error && S.seats[id].error.code) || "upstream_error";
+      const code = (S.seats[id].error && (S.seats[id].error as { code: string }).code) || "upstream_error";
       if (!worst || RANK[errInfo(code).kind] > RANK[errInfo(worst).kind]) worst = code;
     });
-    const info = errInfo(worst);
+    const info = errInfo(worst as string);
     const names = Core.namesList(failed.map(stepName));
-    const example = S.seats[failed.filter(id => ((S.seats[id].error && S.seats[id].error.code) || "upstream_error") === worst)[0]];
+    const example = S.seats[failed.filter(id => ((S.seats[id].error && (S.seats[id].error as { code: string }).code) || "upstream_error") === worst)[0]];
     S.phase = info.kind === "fatal" ? "blocked" : "paused";
-    S.notice = { text: (info.kind === "fatal" ? "" : names + " couldn't finish. ") + errText(worst, example), retry: info.kind === "retry" };
+    S.notice = { text: (info.kind === "fatal" ? "" : names + " couldn't finish. ") + errText(worst as string, example), retry: info.kind === "retry" };
     S.canRetry = info.kind === "retry";
     pauseClock();
     saveSession();
+    saveState();
     schedule();
   }
 
@@ -635,6 +774,7 @@
     S.stoppedAt = Date.now();
     pauseClock();
     saveSession();
+    saveState();
     const hadFocus = document.activeElement === els.convene || document.activeElement === els.railStop;
     render();
     if (hadFocus && !els.resume.hidden) els.resume.focus();
@@ -668,13 +808,14 @@
     S.convenedAt = Date.now();
     startClock();
     saveSession();
+    saveState();
     const hadFocus = document.activeElement === els.resume || document.activeElement === els.noticeRetry;
     render();
     if (hadFocus) els.convene.focus();
     run(tok).catch(onRunCrash);
   }
 
-  function onRunCrash(err) {
+  function onRunCrash(err: unknown) {
     console.error(err);
     S.token += 1;
     abortAll();
@@ -690,6 +831,7 @@
     S.canRetry = true;
     pauseClock();
     saveSession();
+    saveState();
     schedule();
   }
 
@@ -704,40 +846,45 @@
   function saveSession() {
     const b = handedOff("brief");
     if (!b) return;
-    const seats = {};
+    const seats: Record<string, { text: string, truncated: boolean, agent: Agent | null, served: string }> = {};
     ALL_IDS.forEach(id => {
       const d = handedOff(id);
       if (d) seats[id] = { text: d.text, truncated: d.truncated, agent: d.agent, served: d.served };
     });
-    store.set(SESSION_KEY, JSON.stringify({ v: 1, brief: b, agents: S.agents, elapsed: elapsed(), seats }));
+    store.set(SESSION_KEY, JSON.stringify({ v: 1, brief: b, revision: handedOff("revision"), agents: S.agents, elapsed: elapsed(), seats }));
   }
 
-  function agentFrom(a) {
+  function agentFrom(a: any): Agent | null {
     return a && typeof a === "object" && PROVIDERS[a.provider] && typeof a.model === "string" ? { provider: a.provider, model: a.model } : null;
   }
 
-  function restoreSession() {
+  function restoreSession(): boolean {
     let saved = null;
     try { saved = JSON.parse(store.get(SESSION_KEY) || "null"); } catch (_) { saved = null; }
     const b = saved && saved.v === 1 && saved.brief;
     if (!b || typeof b.feature !== "string" || !b.feature.trim()) return false;
     const seats = saved.seats && typeof saved.seats === "object" ? saved.seats : {};
-    const handoffs = {
+    const project = b.project && typeof b.project.path === "string" ? { path: b.project.path, name: String(b.project.name || "") } : null;
+    const rev = saved.revision && typeof saved.revision === "object" && Number.isInteger(saved.revision.round) ? saved.revision : null;
+    const handoffs: Handoffs = {
       brief: Graph.handoff("brief", "brief", {
         feature: b.feature,
         context: (Array.isArray(b.context) ? b.context : [])
-          .filter(c => c && typeof c.text === "string")
-          .map(c => ({ title: typeof c.title === "string" ? c.title : "", text: c.text })),
+          .filter((c: any) => c && typeof c.text === "string")
+          .map((c: any) => ({ title: typeof c.title === "string" ? c.title : "", text: c.text })),
         length: LENGTHS[b.length] ? b.length : "standard",
+        project, questions: !!b.questions, review: !!b.review,
       }),
+      revision: Graph.handoff("revision", "revision", rev),
     };
     // A step comes back only if everything it needs came back too.
-    Core.SESSION.order.forEach(id => {
-      const node = Core.SESSION.nodes[id], step = Core.STEPS[node.kind], s = seats[id];
+    const graph = Core.graphFor(handoffs.brief.data);
+    graph.order.forEach(id => {
+      const node = graph.nodes[id], step = Core.STEPS[node.kind], s = seats[id];
       if (handoffs[id] || !step || !node.needs.every(d => handoffs[d])) return;
-      const inputs = {};
+      const inputs: Handoffs = {};
       node.needs.forEach(d => { inputs[d] = handoffs[d]; });
-      const task = { node: id, kind: node.kind, inputs };
+      const task: Task = { node: id, kind: node.kind, inputs };
       try {
         if (step.compute) {
           handoffs[id] = Graph.handoff(id, node.kind, step.compute(task));
@@ -752,31 +899,42 @@
     });
     S.handoffs = handoffs;
     S.session += 1;
+    S.round = rev ? rev.round : 1;
+    S.past = [];
     S.agents = Core.normalizeAgents(saved.agents, INSIDE);
     resetSeats();
+    resetConvos(false);
     ALL_IDS.forEach(id => {
-      const d = handedOff(id);
-      if (d) Object.assign(S.seats[id], { status: "done", text: d.text, truncated: d.truncated, agent: d.agent, served: d.served });
+      const h = handoffs[id], d = h ? h.data : null;
+      if (d) Object.assign(S.seats[id], { status: "done", text: d.text, truncated: d.truncated, agent: d.agent, served: d.served, skipped: h.kind === "amend" && !d.amended });
     });
     // Seats that hadn't finished when the page closed read as stopped, so Resume asks them again.
-    Graph.ready(Core.SESSION, handoffs).forEach(id => { if (S.seats[id]) S.seats[id].status = "stopped"; });
-    S.phase = handoffs.chair ? "done" : "stopped";
-    S.revealed = { proposals: true, council: LETTERS.every(L => handoffs[L]), vote: !!handoffs.tally, plan: !!handoffs.tally };
+    const ready = Graph.ready(graph, handoffs);
+    ready.forEach(id => { if (S.seats[id]) S.seats[id].status = "stopped"; });
+    S.phase = graph.order.every(id => handoffs[id]) ? "done" : "stopped";
+    S.revealed = {
+      proposals: true,
+      questions: ASK_IDS.some(id => handoffs[id] || ready.indexOf(id) >= 0),
+      council: graph.nodes.advocate.needs.every(n => handoffs[n]),
+      vote: !!handoffs.tally,
+      review: !!(handoffs.brief.data.review && handoffs.chair),
+      plan: !!handoffs.tally,
+    };
     const ms = Number(saved.elapsed);
     S.clock = { startedAt: 0, accumulated: Number.isFinite(ms) && ms > 0 ? ms : 0 };
     return true;
   }
 
   // When the viewer's plan lacks a chosen tier, the platform answers with a cheaper one. Say so.
-  function substituted(seat) {
+  function substituted(seat: Seat): boolean {
     return !!(seat.agent && seat.agent.provider === "claude" && TIERS[seat.served] && seat.served !== seat.agent.model);
   }
 
-  function tierNoteText() {
-    const subs = [];
+  function tierNoteText(): string {
+    const subs: { who: string, asked: string, got: string }[] = [];
     ROLES.forEach(r => {
       const seat = r.seats.map(id => S.seats[id]).filter(substituted)[0];
-      if (seat) subs.push({ who: ROLE_WORDS[r.id], asked: seat.agent.model, got: seat.served });
+      if (seat) subs.push({ who: ROLE_WORDS[r.id], asked: (seat.agent as Agent).model, got: seat.served });
     });
     if (!subs.length) return "";
     const same = subs.every(x => x.asked === subs[0].asked && x.got === subs[0].got);
@@ -788,9 +946,9 @@
       Core.listAnd(subs.map(x => x.who + " answered on " + TIERS[x.got].label + " instead of " + TIERS[x.asked].label)) + ".";
   }
 
-  function settingsHint(agents) {
+  function settingsHint(agents: Agents): string {
     const list = activeRoles(els.reviewOn.checked).map(r => agents[r.id]);
-    const hints = [];
+    const hints: string[] = [];
     const claude = list.filter(a => a.provider === "claude").map(a => a.model);
     if (claude.indexOf("complex") >= 0) hints.push("Frontier is Claude's most capable model and thinks longest, so its seats can take a few minutes.");
     else if (claude.length && claude.every(t => t === "quick")) hints.push("Fast is Claude's quickest, cheapest model.");
@@ -810,15 +968,16 @@
   /* ---------- Providers and agent pickers ---------- */
 
   // Keys live in memory, and in this browser's storage only when "Remember" is ticked.
-  const creds = { keys: { openrouter: "", hermes: "", custom: "" }, urls: { hermes: "", custom: "" }, remember: { openrouter: false, hermes: false, custom: false } };
-  const lastModel = {};
+  const creds: { keys: Record<string, string>, urls: Record<string, string>, remember: Record<string, boolean> } =
+    { keys: { openrouter: "", hermes: "", custom: "" }, urls: { hermes: "", custom: "" }, remember: { openrouter: false, hermes: false, custom: false } };
+  const lastModel: Record<string, Record<string, string>> = {};
   ROLES.forEach(r => { lastModel[r.id] = {}; });
-  const modelLists = { openrouter: Core.OPENROUTER_PRESETS.slice(), hermes: [], custom: [] };
+  const modelLists: Record<string, ModelChoice[]> = { openrouter: Core.OPENROUTER_PRESETS.slice(), hermes: [], custom: [] };
 
-  function credsSnapshot() {
+  function credsSnapshot(): ProviderConfig {
     return {
       keys: Object.assign({}, creds.keys),
-      urls: { hermes: creds.urls.hermes || PROVIDERS.hermes.defaultUrl, custom: creds.urls.custom },
+      urls: { hermes: creds.urls.hermes || PROVIDERS.hermes.defaultUrl as string, custom: creds.urls.custom },
       local: local ? location.origin : "",
     };
   }
@@ -851,7 +1010,7 @@
     store.set("quorum:agents", JSON.stringify(currentAgents()));
   }
 
-  function fillDatalist(id, list) {
+  function fillDatalist(id: string, list: ModelChoice[]) {
     const dl = $(id);
     while (dl.firstChild) dl.removeChild(dl.firstChild);
     list.forEach(m => {
@@ -862,13 +1021,13 @@
     });
   }
 
-  function modelPlaceholder(provider) {
+  function modelPlaceholder(provider: string): string {
     return provider === "openrouter" ? "nousresearch/hermes-4-70b" : provider === "hermes" ? "hermes-agent" :
       provider === "claude-code" ? "Claude Code's default model" : "Model name";
   }
 
   // Show the tier picker for Claude and a model field for everything else.
-  function syncAgentRow(role) {
+  function syncAgentRow(role: string) {
     const provider = providerSelects[role].value;
     const claude = provider === "claude";
     tierSelects[role].hidden = !claude;
@@ -878,7 +1037,7 @@
     else modelFields[role].setAttribute("list", "models-" + provider);
   }
 
-  function applyAgents(agents) {
+  function applyAgents(agents: Agents) {
     ROLES.forEach(r => {
       const a = agents[r.id];
       providerSelects[r.id].value = a.provider;
@@ -889,7 +1048,7 @@
     });
   }
 
-  function onProviderChange(role) {
+  function onProviderChange(role: string) {
     const provider = providerSelects[role].value;
     const remembered = lastModel[role][provider];
     const model = remembered != null ? remembered : Core.defaultModel(provider, role);
@@ -903,12 +1062,12 @@
 
   function setProviderOptions() {
     ROLES.forEach(r => {
-      Array.prototype.forEach.call(providerSelects[r.id].options, opt => {
+      Array.prototype.forEach.call(providerSelects[r.id].options, (opt: HTMLOptionElement) => {
         let usable = Core.usableHere(opt.value, INSIDE);
         let why = INSIDE ? " (outside Claude only)" : " (inside claude.ai only)";
         if (usable && PROVIDERS[opt.value].local && localState !== "pending" && !providerReady(opt.value)) {
           usable = false;
-          why = local ? " (not installed)" : " (needs npm start)";
+          why = local ? " (not installed)" : " (needs bun start)";
         }
         opt.disabled = !usable;
         const base = PROVIDERS[opt.value].label;
@@ -916,14 +1075,14 @@
       });
     });
     EXTERNAL.forEach(p => { providerSets[p].disabled = INSIDE; });
-    $("set-claude-code").disabled = INSIDE;
+    $<HTMLFieldSetElement>("set-claude-code").disabled = INSIDE;
   }
 
   function writeHermesHelp() {
     const el = els.helpHermes;
     while (el.firstChild) el.removeChild(el.firstChild);
     const origin = pageOrigin();
-    const add = (text, code) => {
+    const add = (text: string, code?: boolean) => {
       const node = code ? document.createElement("code") : document.createTextNode(text);
       if (code) node.textContent = text;
       el.appendChild(node);
@@ -952,11 +1111,11 @@
 
   function writeProvidersIntro() {
     els.providersIntro.textContent = INSIDE ?
-      "Quorum is open inside Claude, so every agent runs on Claude. Pages published on Claude can't reach other services. To use OpenRouter, Hermes Agent or another endpoint, open Quorum on its own, from the downloaded file or your GitHub Pages site. To use Claude Code, run Quorum on your computer with npm start." :
+      "Quorum is open inside Claude, so every agent runs on Claude. Pages published on Claude can't reach other services. To use OpenRouter, Hermes Agent or another endpoint, open Quorum on its own, from the downloaded file or your GitHub Pages site. To use Claude Code, run Quorum on your computer with bun start." :
       "Keys stay in this browser and are sent only to the service they belong to. Leave Remember off on a shared computer.";
   }
 
-  function providerReady(p) {
+  function providerReady(p: string): boolean {
     if (p === "claude-code") return !!(local && local.claudeCode.available);
     if (p === "openrouter") return !!creds.keys.openrouter;
     if (p === "hermes") return !!creds.keys.hermes;
@@ -980,14 +1139,14 @@
     let text = "", ok = false;
     if (INSIDE) text = "Claude Code works when Quorum runs on your computer.";
     else if (localState === "pending") text = "Looking for Quorum's local server\u2026";
-    else if (!local) text = "Claude Code works when Quorum runs on your computer: run npm start in Quorum's folder, then open the address it prints.";
+    else if (!local) text = "Claude Code works when Quorum runs on your computer: run bun start in Quorum's folder, then open the address it prints.";
     else if (local.claudeCode.available) { text = "Claude Code " + local.claudeCode.version + " is installed."; ok = true; }
     else text = "Quorum's server couldn't find Claude Code. Install it, or restart the server with QUORUM_CLAUDE_BIN set to its path.";
     setText(els.statusClaudeCode, text);
     els.statusClaudeCode.classList.toggle("is-ok", ok);
   }
 
-  async function checkConnection(p) {
+  async function checkConnection(p: string) {
     const status = $("status-" + p);
     status.className = "provider-status";
     status.textContent = "Checking…";
@@ -998,7 +1157,7 @@
       status.classList.add("is-ok");
       const names = list.slice(0, 3).map(m => m.id);
       status.textContent = "Connected." + (names.length ? " It offers " + Core.listAnd(names.map(n => "\u201C" + n + "\u201D")) + (list.length > 3 ? " and more." : ".") : "");
-    } catch (e) {
+    } catch (e: any) {
       status.classList.add("is-error");
       const code = e && e.code;
       const label = p === "hermes" ? "Hermes Agent" : "the endpoint";
@@ -1010,7 +1169,7 @@
   }
 
   // What an agent is doing with a tool, as a phrase: "reading src/app.js", or "working with read_file".
-  function activityOf(data) {
+  function activityOf(data: string): string {
     let o = null;
     try { o = JSON.parse(data); } catch (_) { o = null; }
     const name = o && (o.tool || o.name || o.tool_name || (o.function && o.function.name));
@@ -1040,9 +1199,9 @@
   function elapsed() {
     return S.clock.accumulated + (S.clock.startedAt ? Date.now() - S.clock.startedAt : 0);
   }
-  function fmtDuration(ms) {
+  function fmtDuration(ms: number): string {
     const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-    const pad = n => (n < 10 ? "0" : "") + n;
+    const pad = (n: number) => (n < 10 ? "0" : "") + n;
     return h ? h + ":" + pad(m) + ":" + pad(sec) : m + ":" + pad(sec);
   }
   function renderClock() {
@@ -1058,26 +1217,27 @@
 
   /* ---------- Rendering ---------- */
 
-  let frame = 0;
+  let frame: unknown = 0;
   function schedule() {
     if (frame) return;
-    const raf = window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : fn => setTimeout(fn, 16);
+    const raf: (fn: () => void) => unknown = window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : fn => setTimeout(fn, 16);
     frame = raf(() => { frame = 0; render(); }) || 1;
   }
 
-  function setText(el, text) {
-    if (el.textContent !== text) el.textContent = text;
+  function setText(el: Element | null, text: string) {
+    if ((el as Element).textContent !== text) (el as Element).textContent = text;
   }
-  function setHTML(el, html) {
+  function setHTML(target: Element, html: string): boolean {
+    const el = target as Element & Drawn;
     if (el._html === html) return false;
     el.innerHTML = html;
     el._html = html;
     return true;
   }
-  function toggle(el, on) {
+  function toggle(el: HTMLElement, on: boolean | string | null | undefined) {
     if (el.hidden === !!on) el.hidden = !on;
   }
-  function setLetter(el, letter) {
+  function setLetter(el: Element, letter: string | null | undefined) {
     if (letter) {
       if (el.getAttribute("data-letter") !== letter) el.setAttribute("data-letter", letter);
     } else if (el.hasAttribute("data-letter")) {
@@ -1099,6 +1259,7 @@
     renderRevise();
     renderRounds();
     renderNotice();
+    renderConvo();
   }
 
   function renderControls() {
@@ -1137,7 +1298,7 @@
     renderSessions();
   }
 
-  function seatAvailable(id) {
+  function seatAvailable(id: string): boolean {
     return isBuilder(id) ? S.revealed.proposals : isCouncil(id) ? S.revealed.council : S.revealed.plan;
   }
 
@@ -1145,7 +1306,7 @@
   // has started.
   // A builder's seat shows its answers to the council once it's answering, and a councilor's seat shows its questions
   // until it starts its review.
-  function seatShown(id) {
+  function seatShown(id: string): { status: SeatStatus } {
     if (id === "chair") return S.seats.final.status !== "idle" ? S.seats.final : S.seats.chair;
     if (isBuilder(id)) {
       const a = S.seats[amendId(id)];
@@ -1153,26 +1314,26 @@
     }
     if (isCouncil(id) && S.seats[id].status === "idle") {
       const asks = LETTERS.map(L => S.seats[askId(id, L)].status);
-      const status = ["error", "writing", "thinking", "stopped"].filter(x => asks.indexOf(x) >= 0)[0] || "idle";
+      const status = (["error", "writing", "thinking", "stopped"] as const).filter(x => asks.indexOf(x) >= 0)[0] || "idle";
       return { status };
     }
     return S.seats[id];
   }
 
-  function seatPhrase(id) {
+  function seatPhrase(id: string): string {
     const s = seatShown(id);
     switch (s.status) {
       case "thinking": return "thinking";
       case "writing": return "writing";
-      case "done": return isCouncil(id) ? "ranked " + ballotOf(id).ranking[0] + " first" : isBuilder(id) ? "proposal ready" : "plan written";
+      case "done": return isCouncil(id) ? "ranked " + (ballotOf(id) as Ballot).ranking[0] + " first" : isBuilder(id) ? "proposal ready" : "plan written";
       case "error": return "couldn't finish";
       case "stopped": return "stopped";
       default: return "waiting";
     }
   }
 
-  const prevSeat = {};
-  const popping = {};
+  const prevSeat: Record<string, SeatStatus> = {};
+  const popping: Record<string, boolean> = {};
   function renderSeats() {
     const w = winnerLetter();
     SEAT_IDS.forEach(id => {
@@ -1182,7 +1343,8 @@
         letter = id;
         glyph = id;
       } else if (isCouncil(id)) {
-        if (ballotOf(id)) { letter = ballotOf(id).ranking[0]; glyph = letter; }
+        const b = ballotOf(id);
+        if (b) { letter = b.ranking[0]; glyph = letter; }
       } else if (w && (st === "writing" || st === "done")) {
         letter = w;
         if (st === "done") glyph = w;
@@ -1197,7 +1359,7 @@
       const cls = "seat is-" + st + (working ? " is-working" : "") + (popping[id] ? " pop" : "");
       if (g.getAttribute("class") !== cls) g.setAttribute("class", cls);
       setLetter(g, letter);
-      const glyphEl = g.querySelector(".seat-glyph");
+      const glyphEl = g.querySelector(".seat-glyph") as Element;
       if (glyphEl.textContent !== glyph) glyphEl.textContent = glyph;
       const avail = seatAvailable(id);
       g.setAttribute("tabindex", avail ? "0" : "-1");
@@ -1206,7 +1368,7 @@
     });
   }
 
-  function stageState(ids) {
+  function stageState(ids: string[]): string {
     const st = ids.map(id => S.seats[id].status);
     if (st.every(s => s === "done")) return "done";
     if (st.some(s => s === "thinking" || s === "writing")) return "active";
@@ -1215,7 +1377,7 @@
     return S.phase === "running" ? "active" : "waiting";
   }
 
-  function statusLine() {
+  function statusLine(): string {
     const w = winnerLetter();
     switch (S.phase) {
       case "idle":
@@ -1263,11 +1425,11 @@
 
   function renderRail() {
     setText(els.status, statusLine());
-    const states = {
+    const states: Record<string, string> = {
       proposals: S.revealed.proposals ? stageState(LETTERS) : "waiting",
       questions: S.revealed.questions ? stageState(ASK_IDS.concat(AMEND_IDS)) : "waiting",
       council: S.revealed.council ? stageState(COUNCIL_IDS) : "waiting",
-      vote: tally() ? (tally().decidedBy === "chair" && !decided() ? "tied" : "done") : "waiting",
+      vote: tally() ? ((tally() as Tally).decidedBy === "chair" && !decided() ? "tied" : "done") : "waiting",
       review: S.revealed.review ? stageState(REVIEWER_IDS) : "waiting",
       plan: S.revealed.plan ? stageState(reviewing() ? ["chair", "final"] : ["chair"]) : "waiting",
     };
@@ -1277,12 +1439,12 @@
     toggle(els.stageQuestions, questions);
     const order = ["proposals", questions && "questions", "council", "vote", review && "review", "plan"].filter(Boolean);
     stageBtns.forEach(btn => {
-      const n = String(order.indexOf(btn.getAttribute("data-stage")) + 1);
+      const n = String(order.indexOf(btn.getAttribute("data-stage") as string) + 1);
       setText(btn.querySelector(".stage-n"), n);
-      setText($(btn.getAttribute("data-target")).querySelector(".sec-num"), n);
+      setText($(btn.getAttribute("data-target") as string).querySelector(".sec-num"), n);
     });
     stageBtns.forEach(btn => {
-      const key = btn.getAttribute("data-stage");
+      const key = btn.getAttribute("data-stage") as Section;
       const st = states[key];
       if (btn.getAttribute("data-state") !== st) btn.setAttribute("data-state", st);
       setText(btn.querySelector(".stage-state"), STAGE_WORDS[st]);
@@ -1290,6 +1452,7 @@
       btn.tabIndex = S.revealed[key] ? 0 : -1;
     });
     toggle(els.railStop, S.phase === "running");
+    toggle(els.railConvo, S.phase !== "idle" && convoSteps().length > 0);
     renderClock();
     renderSaveState();
   }
@@ -1310,8 +1473,9 @@
     const pr = brief().project;
     toggle(els.motionProject, !!pr);
     setHTML(els.motionProject, pr ? "In the project <code>" + Core.esc(pr.path) + "</code>" : "");
-    if (els.motionContextBody._session !== S.session) {
-      els.motionContextBody._session = S.session;
+    const contextBody = els.motionContextBody as HTMLElement & Drawn;
+    if (contextBody._session !== S.session) {
+      contextBody._session = S.session;
       const blocks = Core.contextBlocks(brief().context);
       toggle(els.motionContext, blocks.length > 0);
       els.motionContext.open = false;
@@ -1321,7 +1485,7 @@
     }
   }
 
-  function statusTitle(id) {
+  function statusTitle(id: string): string {
     switch (S.seats[id].status) {
       case "thinking": return "Thinking…";
       case "writing": return "Writing…";
@@ -1332,7 +1496,7 @@
     }
   }
 
-  function waitCopy(agent) {
+  function waitCopy(agent: Agent | null): string {
     if (!agent || agent.provider !== "claude") {
       return agent && agent.provider === "hermes" ? "Hermes Agent may use its tools first, so writing can take a few minutes to start." :
         agent && agent.provider === "claude-code" ? "Claude Code explores the project first, so writing can take a few minutes to start." :
@@ -1344,34 +1508,34 @@
   }
 
   // The agent a seat ran on, or will run on: what answered if known, else what was asked for.
-  function agentFor(id) {
+  function agentFor(id: string): Agent {
     const s = S.seats[id];
-    const asked = s.agent || S.agents[Core.roleOf(id)];
+    const asked = s.agent || S.agents[Core.roleOf(id) as string];
     if (!s.served) return asked;
     return { provider: asked.provider, model: s.served };
   }
 
-  function agentText(id) {
+  function agentText(id: string): string {
     return Core.agentLabel(agentFor(id), { customUrl: creds.urls.custom });
   }
 
   // The small chip beside each byline naming the agent that answered.
-  function renderTier(el, id) {
+  function renderTier(el: HTMLElement, id: string) {
     const s = S.seats[id];
     const sub = substituted(s);
     const label = agentText(id);
     const html = label ? '<span class="visually-hidden">Agent: </span>' + Core.esc(label) +
-      (sub ? '<span class="visually-hidden">, because ' + TIERS[s.agent.model].label + " isn't available on your plan</span>" : "") : "";
+      (sub ? '<span class="visually-hidden">, because ' + TIERS[(s.agent as Agent).model].label + " isn't available on your plan</span>" : "") : "";
     setHTML(el, html);
     toggle(el, !!html);
     el.classList.toggle("is-sub", sub);
     const full = agentFor(id);
-    if (sub) el.title = TIERS[s.agent.model].label + " isn't available on your plan";
+    if (sub) el.title = TIERS[(s.agent as Agent).model].label + " isn't available on your plan";
     else if (full.provider !== "claude") el.title = PROVIDERS[full.provider].label + (full.model ? ": " + full.model : "");
     else el.removeAttribute("title");
   }
 
-  function placeholderFor(id) {
+  function placeholderFor(id: string): { pulse: boolean, text: string } {
     const s = S.seats[id], name = CAST[id].name;
     if (s.status === "thinking") {
       if (s.activity) return { pulse: true, text: name + " is " + s.activity + "." };
@@ -1387,7 +1551,7 @@
     return { pulse: false, text: waitingText(id) };
   }
 
-  function waitingText(id) {
+  function waitingText(id: string): string {
     if (isBuilder(id)) return "Waiting to begin.";
     if (isAsk(id)) return "Waiting for Proposal " + Core.stepOf(id).letter + ".";
     if (isAmend(id)) return "The builder answers once the council has asked its questions.";
@@ -1396,9 +1560,9 @@
     return id === "final" ? "The Chair revises the plan once the reviewers are done." : "The Chair writes once the votes are counted.";
   }
 
-  function noteFor(id) {
+  function noteFor(id: string): { text: string, error: boolean } | null {
     const s = S.seats[id];
-    if (s.status === "error") return { text: errText(s.error && s.error.code, s, "short"), error: true };
+    if (s.status === "error") return { text: errText(s.error ? s.error.code : "", s, "short"), error: true };
     if (s.status === "stopped") {
       return { text: s.text ? "Stopped part-way. Resuming asks for this again from the start." : "Resuming asks for this again.", error: false };
     }
@@ -1406,14 +1570,15 @@
     return null;
   }
 
-  function renderNote(el, note) {
+  function renderNote(el: HTMLElement, note: { text: string, error?: boolean } | null) {
     toggle(el, !!note);
     if (!note) return;
     setText(el, note.text);
     el.classList.toggle("is-error", !!note.error);
   }
 
-  function renderDoc(el, id, text, status, placeholder) {
+  function renderDoc(target: HTMLElement, id: string, text: string, status: SeatStatus, placeholder: { pulse: boolean, text: string }) {
+    const el = target as HTMLElement & Drawn;
     const hasText = !!(text && text.trim());
     const key = S.session + "|" + id + "|" + status + "|" +
       (hasText ? text.length + ":" + text.slice(-32) : "p:" + placeholder.pulse + ":" + placeholder.text);
@@ -1431,7 +1596,7 @@
     }
   }
 
-  function appendCaret(root) {
+  function appendCaret(root: Element) {
     let host = root;
     for (let guard = 0; guard < 12; guard++) {
       const last = host.lastElementChild;
@@ -1453,7 +1618,7 @@
     host.appendChild(caret);
   }
 
-  function proposalMeta(id) {
+  function proposalMeta(id: string): string {
     const s = S.seats[proposalSeatId(id)];
     if (s.status === "writing") return Core.wordCount(s.text) + " words so far";
     if (s.status === "error") return "Couldn't finish";
@@ -1468,13 +1633,13 @@
     return p;
   }
 
-  function selectTab(group, key) {
+  function selectTab(group: keyof typeof S.sel, key: string) {
     if (S.sel[group] === key) return;
     S.sel[group] = key;
     render();
   }
 
-  function renderTab(tab, on, status) {
+  function renderTab(tab: HTMLElement, on: boolean, status: string) {
     tab.setAttribute("aria-selected", on ? "true" : "false");
     tab.tabIndex = on ? 0 : -1;
     if (tab.getAttribute("data-status") !== status) tab.setAttribute("data-status", status);
@@ -1497,6 +1662,7 @@
     setLetter(els.propPane, id);
     setText(els.propByline, "Proposal " + id + ", by " + Core.midName(CAST[id].name) + (viewId !== id ? ", adjusted after the council's questions" : ""));
     renderTier(els.propTier, viewId);
+    renderConvoLink(els.propConvo, viewId);
     renderDoc(els.propDoc, viewId, s.text, s.status, placeholderFor(viewId));
     let note = noteFor(viewId);
     if (!note && viewId === id && !am.skipped) {
@@ -1517,7 +1683,7 @@
       const asked = COUNCIL_IDS.map(c => handedOff(askId(c, L)));
       const all = asked.every(Boolean), n = asked.reduce((k, d) => k + (d ? d.questions.length : 0), 0);
       const states = asks.concat([am]).map(x => x.status);
-      const status = am.status === "done" ? "done" : ["error", "writing", "thinking", "stopped"].filter(x => states.indexOf(x) >= 0)[0] || "idle";
+      const status = am.status === "done" ? "done" : (["error", "writing", "thinking", "stopped"] as const).filter(x => states.indexOf(x) >= 0)[0] || "idle";
       renderTab(tab, S.sel.questions === L, status);
       setText(tab.querySelector(".tab-title"), all ? (n ? n + (n === 1 ? " question" : " questions") : "No questions") :
         asks.some(x => x.status !== "idle") ? "Asking\u2026" : "Waiting");
@@ -1529,13 +1695,13 @@
     const L = S.sel.questions, builder = Core.midName(CAST[L].name);
     els.questionsPane.setAttribute("aria-labelledby", "qtab-" + L);
     setLetter(els.questionsPane, L);
-    const placeholder = p => '<p class="placeholder">' + (p.pulse ? '<span class="pulse" aria-hidden="true"></span>' : "") + "<span>" + Core.esc(p.text) + "</span></p>";
+    const placeholder = (p: { pulse: boolean, text: string }) => '<p class="placeholder">' + (p.pulse ? '<span class="pulse" aria-hidden="true"></span>' : "") + "<span>" + Core.esc(p.text) + "</span></p>";
     const blocks = COUNCIL.map(c => {
       const id = askId(c.id, L), seat = S.seats[id], d = handedOff(id);
-      const body = d ? (d.questions.length ? "<ol>" + d.questions.map(q => "<li>" + Core.inline(q) + "</li>").join("") + "</ol>" : '<p class="qa-none">No questions.</p>') :
+      const body = d ? (d.questions.length ? "<ol>" + d.questions.map((q: string) => "<li>" + Core.inline(q) + "</li>").join("") + "</ol>" : '<p class="qa-none">No questions.</p>') :
         seat.text ? Core.renderMarkdown(seat.text.replace(/^[ \t]{0,3}#{1,6}[ \t]+questions[ \t]*$/im, "")) : placeholder(placeholderFor(id));
       const note = noteFor(id);
-      return '<div class="qa-block"><p class="qa-who">' + Core.esc(c.name) + " asks</p><div class=\"doc\">" + body + "</div>" +
+      return '<div class="qa-block"><p class="qa-who">' + Core.esc(c.name) + " asks" + convoLinkHTML(id) + "</p><div class=\"doc\">" + body + "</div>" +
         (note && note.error ? '<p class="pane-note is-error">' + Core.esc(note.text) + "</p>" : "") + "</div>";
     });
     const am = S.seats[amendId(L)], answers = am.text && !am.skipped ? Core.sectionText(am.text, "Answers to the council") : "";
@@ -1544,23 +1710,23 @@
         am.status === "writing" ? placeholder({ pulse: true, text: CAST[L].name + " is adjusting the proposal." }) :
           placeholder(placeholderFor(amendId(L)));
     const amNote = noteFor(amendId(L));
-    blocks.push('<div class="qa-block is-answer"><p class="qa-who">' + Core.esc(builder.replace(/^the/, "The")) + " answers</p><div class=\"doc\">" + answer + "</div>" +
+    blocks.push('<div class="qa-block is-answer"><p class="qa-who">' + Core.esc(builder.replace(/^the/, "The")) + " answers" + (am.skipped ? "" : convoLinkHTML(amendId(L))) + "</p><div class=\"doc\">" + answer + "</div>" +
       (amNote && amNote.error ? '<p class="pane-note is-error">' + Core.esc(amNote.text) + "</p>" : "") + "</div>");
     setHTML(els.questionsDoc, blocks.join(""));
   }
 
-  function suffix(n) {
+  function suffix(n: number): string {
     return n === 1 ? "st" : n === 2 ? "nd" : "rd";
   }
 
-  function rankBox(k) {
+  function rankBox(k: number): string {
     return '<span class="rank r' + k + '"><span class="visually-hidden">ranked </span>' + k +
       '<span class="visually-hidden">' + suffix(k) + "</span></span>";
   }
 
-  function ballotHTML(id, titles) {
-    const b = ballotOf(id);
-    const rank = {};
+  function ballotHTML(id: string, titles: Record<string, string>): string {
+    const b = ballotOf(id) as Ballot;
+    const rank: Record<string, number> = {};
     b.ranking.forEach((L, k) => { rank[L] = k + 1; });
     const rows = LETTERS.map(L => {
       const sc = b.scores[L];
@@ -1581,7 +1747,7 @@
     COUNCIL.forEach(c => {
       const tab = $("tab-" + c.id), s = S.seats[c.id];
       renderTab(tab, S.sel.council === c.id, s.status);
-      const first = ballotOf(c.id) ? ballotOf(c.id).ranking[0] : "";
+      const ballot = ballotOf(c.id), first = ballot ? ballot.ranking[0] : "";
       setLetter(tab, first);
       setText(tab.querySelector(".tab-title"), first ? "Ranks " + first + " first" : statusTitle(c.id));
       const meta = first ? (titles[first] ? "\u201C" + titles[first] + "\u201D" : "") :
@@ -1595,6 +1761,7 @@
     els.councilPane.setAttribute("aria-labelledby", "tab-" + id);
     setText(els.councilByline, "Review by " + Core.midName(CAST[id].name));
     renderTier(els.councilTier, id);
+    renderConvoLink(els.councilConvo, id);
     renderDoc(els.councilDoc, id, Core.reviewBody(s.text), s.status, placeholderFor(id));
     setHTML(els.ballot, ballotOf(id) ? ballotHTML(id, titles) : "");
     renderNote(els.councilNote, noteFor(id));
@@ -1627,7 +1794,7 @@
     const html = '<table class="division" role="table"><caption class="visually-hidden">How each councilor ranked the proposals, with the points each earned</caption>' +
       '<thead role="rowgroup">' + head + '</thead><tbody role="rowgroup">' + body + "</tbody></table>";
     if (setHTML(els.division, html)) {
-      const fills = Array.prototype.slice.call(els.division.querySelectorAll(".bar-fill"));
+      const fills: HTMLElement[] = Array.prototype.slice.call(els.division.querySelectorAll(".bar-fill"));
       const apply = () => fills.forEach(f => { f.style.width = f.getAttribute("data-pct") + "%"; });
       if (reduceMotion.matches || !window.requestAnimationFrame) apply();
       else window.requestAnimationFrame(() => window.requestAnimationFrame(apply));
@@ -1649,6 +1816,7 @@
     els.reviewPane.setAttribute("aria-labelledby", "tab-" + id);
     setText(els.reviewByline, "Review by " + Core.midName(CAST[id].name));
     renderTier(els.reviewTier, id);
+    renderConvoLink(els.reviewConvo, id);
     renderDoc(els.reviewDoc, id, s.text, s.status, placeholderFor(id));
     renderNote(els.reviewNote, noteFor(id));
   }
@@ -1667,6 +1835,7 @@
         S.seats.chair.status === "done" ? "Written by the Chair from " + from + "." : "The Chair writes from " + from + ".");
     setText(els.planByline, by);
     renderTier(els.planTier, planId);
+    renderConvoLink(els.planConvo, planId);
     renderDoc(els.planDoc, planId, s.text, s.status, placeholderFor(planId));
     let note = noteFor(planId);
     if (!note && reviewed && !showFinal && S.seats.chair.status === "done") {
@@ -1696,7 +1865,7 @@
 
   /* ---------- Actions ---------- */
 
-  function scrollToSection(el) {
+  function scrollToSection(el: HTMLElement) {
     try {
       el.scrollIntoView({ behavior: reduceMotion.matches ? "auto" : "smooth", block: "start" });
     } catch (_) {
@@ -1704,11 +1873,11 @@
     }
   }
 
-  function focusQuietly(el) {
+  function focusQuietly(el: HTMLElement) {
     try { el.focus({ preventScroll: true }); } catch (_) { el.focus(); }
   }
 
-  function jumpToSeat(id) {
+  function jumpToSeat(id: string) {
     if (!seatAvailable(id)) return;
     if (isBuilder(id)) {
       selectTab("proposals", id);
@@ -1724,7 +1893,7 @@
     }
   }
 
-  function showFieldNote(text) {
+  function showFieldNote(text: string) {
     els.featureNote.textContent = text;
     els.featureNote.hidden = !text;
     if (text) els.feature.setAttribute("aria-invalid", "true");
@@ -1737,14 +1906,14 @@
     el.style.height = Math.max(104, el.scrollHeight + 2) + "px";
   }
 
-  let draftTimer = 0;
+  let draftTimer: ReturnType<typeof setTimeout> | undefined;
   function saveDraft() { store.set("quorum:draft", els.feature.value); }
   function saveDraftSoon() {
     clearTimeout(draftTimer);
     draftTimer = setTimeout(saveDraft, 400);
   }
 
-  async function copyText(text) {
+  async function copyText(text: string): Promise<boolean> {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(text);
@@ -1766,8 +1935,9 @@
     }
   }
 
-  function flash(btn, text) {
-    const label = btn.getAttribute("data-label") || btn.textContent;
+  function flash(target: HTMLElement, text: string) {
+    const btn = target as HTMLElement & Drawn;
+    const label = btn.getAttribute("data-label") || btn.textContent || "";
     btn.setAttribute("data-label", label);
     btn.textContent = text;
     clearTimeout(btn._flash);
@@ -1775,8 +1945,8 @@
   }
 
   // The agent that wrote each step of a round, from its handoffs.
-  function tiersOf(handoffs) {
-    const tiers = {};
+  function tiersOf(handoffs: Handoffs): Record<string, string> {
+    const tiers: Record<string, string> = {};
     ALL_IDS.forEach(id => {
       const d = handoffs[id] && handoffs[id].data;
       tiers[id] = d && d.agent ? Core.agentLabel({ provider: d.agent.provider, model: d.served || d.agent.model }, { customUrl: creds.urls.custom }) : "";
@@ -1789,7 +1959,7 @@
     let out = Core.recordMarkdown(Object.assign(Core.sessionOf(S.handoffs), {
       setupLine: "Agents: " + Core.agentsSentence(S.agents, { customUrl: creds.urls.custom }) + " Length: " + LENGTHS[brief().length].label + "." +
         (brief().review ? " Final review on " + Core.agentLabel(S.agents.review, { customUrl: creds.urls.custom }) + "." : "") +
-        (brief().project ? " Project: " + brief().project.path + "." : "") + (S.round > 1 ? " Round " + S.round + "." : ""),
+        (brief().project ? " Project: " + (brief().project as Project).path + "." : "") + (S.round > 1 ? " Round " + S.round + "." : ""),
       tiers: tiersOf(S.handoffs),
     }));
     for (let i = S.past.length - 1; i >= 0; i--) {
@@ -1800,7 +1970,7 @@
   }
 
   // Outside Claude there's no save capability; a plain download link does the job.
-  function downloadDirectly(filename, data) {
+  function downloadDirectly(filename: string, data: string) {
     const url = URL.createObjectURL(new Blob([data], { type: "text/markdown;charset=utf-8" }));
     const a = document.createElement("a");
     a.href = url;
@@ -1812,13 +1982,19 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  async function saveFile(kind, btn) {
+  function fileBase() {
+    const plan = planHandoff();
+    return Core.slug((plan && Core.titleOf(plan.text)) || brief().feature.slice(0, 60));
+  }
+
+  async function saveFile(kind: "plan" | "record", btn: HTMLElement) {
     const plan = planHandoff();
     if (!plan) return;
-    const planText = plan.text;
-    const base = Core.slug(Core.titleOf(planText) || brief().feature.slice(0, 60));
-    const filename = (kind === "plan" ? "plan-" : "council-record-") + base + ".md";
-    const data = kind === "plan" ? planText.trim() + "\n" : recordNow();
+    const filename = (kind === "plan" ? "plan-" : "council-record-") + fileBase() + ".md";
+    await saveText(filename, kind === "plan" ? plan.text.trim() + "\n" : recordNow(), btn);
+  }
+
+  async function saveText(filename: string, data: string, btn: HTMLElement) {
     if (!downloadsNS) {
       if (INSIDE) return;
       try {
@@ -1832,7 +2008,7 @@
     try {
       const res = await downloadsNS.save({ filename, data });
       if (res && res.status === "saved") flash(btn, "Saved");
-    } catch (e) {
+    } catch (e: any) {
       const code = e && e.code;
       if (code === "declined") return;
       if (code === "rate_limited") { flash(btn, "Finish the open save first"); return; }
@@ -1845,15 +2021,15 @@
     }
   }
 
-  function wireTabs(list, group, keys, prefix) {
+  function wireTabs(list: HTMLElement, group: keyof typeof S.sel, keys: string[], prefix?: string) {
     list.addEventListener("click", e => {
-      const tab = e.target.closest('[role="tab"]');
-      if (tab) selectTab(group, tab.getAttribute("data-key"));
+      const tab = (e.target as Element).closest('[role="tab"]');
+      if (tab) selectTab(group, tab.getAttribute("data-key") as string);
     });
     list.addEventListener("keydown", e => {
-      const tab = e.target.closest('[role="tab"]');
+      const tab = (e.target as Element).closest('[role="tab"]');
       if (!tab) return;
-      const i = keys.indexOf(tab.getAttribute("data-key"));
+      const i = keys.indexOf(tab.getAttribute("data-key") as string);
       let j = -1;
       if (e.key === "ArrowRight") j = (i + 1) % keys.length;
       else if (e.key === "ArrowLeft") j = (i + keys.length - 1) % keys.length;
@@ -1869,28 +2045,29 @@
   /* ---------- Context blocks ---------- */
 
   const ctxList = $("contextList");
-  let ctxItems = []; // { id, kind, title, text, el, titleEl, textEl, removeEl, sizeEl, labelEl }
+  let ctxItems: ContextField[] = [];
   let ctxSeq = 0;
 
-  function fmtNum(n) {
+  function fmtNum(n: number): string {
     return Number(n).toLocaleString("en-US");
   }
 
-  function sizeContext(el) {
+  function sizeContext(el: HTMLElement) {
     el.style.height = "auto";
     el.style.height = Math.min(360, Math.max(104, el.scrollHeight + 2)) + "px";
   }
 
-  function syncContextLabels(item) {
+  function syncContextLabels(item: ContextField) {
     const name = item.title.trim() || "this context";
     item.labelEl.textContent = item.title.trim() || "Context";
     item.removeEl.setAttribute("aria-label", "Remove " + name);
   }
 
-  function addContext(kind, title, text, focus) {
+  function addContext(kind: string, title?: string | null, text?: string | null, focus?: boolean): ContextField {
     const k = CONTEXT_KINDS[kind] ? kind : "other";
     const id = "c" + (++ctxSeq);
-    const item = { id, kind: k, title: title != null ? String(title) : CONTEXT_KINDS[k].title, text: text != null ? String(text) : "" };
+    // Its elements are added below, once they're made.
+    const item = { id, kind: k, title: title != null ? String(title) : CONTEXT_KINDS[k].title, text: text != null ? String(text) : "" } as ContextField;
     const el = document.createElement("div");
     el.className = "ctx";
     el.innerHTML =
@@ -1903,11 +2080,11 @@
       '<label class="visually-hidden" for="ctx-text-' + id + '"></label>' +
       '<textarea class="ctx-text' + (CONTEXT_KINDS[k].code ? " is-code" : "") + '" id="ctx-text-' + id + '" rows="4"></textarea>';
     item.el = el;
-    item.titleEl = el.querySelector(".ctx-title");
-    item.textEl = el.querySelector(".ctx-text");
-    item.removeEl = el.querySelector(".ctx-remove");
-    item.sizeEl = el.querySelector(".ctx-size");
-    item.labelEl = el.querySelector('label[for="ctx-text-' + id + '"]');
+    item.titleEl = el.querySelector(".ctx-title") as HTMLInputElement;
+    item.textEl = el.querySelector(".ctx-text") as HTMLTextAreaElement;
+    item.removeEl = el.querySelector(".ctx-remove") as HTMLButtonElement;
+    item.sizeEl = el.querySelector(".ctx-size") as HTMLElement;
+    item.labelEl = el.querySelector('label[for="ctx-text-' + id + '"]') as HTMLLabelElement;
     item.titleEl.value = item.title;
     item.textEl.value = item.text;
     item.textEl.placeholder = CONTEXT_KINDS[k].placeholder;
@@ -1941,7 +2118,7 @@
     return item;
   }
 
-  function removeContext(item) {
+  function removeContext(item: ContextField) {
     if (S.phase === "running") return;
     const i = ctxItems.indexOf(item);
     if (i < 0) return;
@@ -1960,7 +2137,7 @@
     ctxItems = [];
   }
 
-  function contextTotal() {
+  function contextTotal(): number {
     return ctxItems.reduce((n, it) => n + it.text.length, 0);
   }
 
@@ -1970,7 +2147,7 @@
       .map(it => ({ title: it.title.trim() || CONTEXT_KINDS[it.kind].title || "", text: it.text }));
   }
 
-  function showContextNote(text) {
+  function showContextNote(text: string) {
     els.contextNote.textContent = text;
     els.contextNote.hidden = !text;
   }
@@ -1988,7 +2165,7 @@
   const FILE_LIMIT = 200000;
   const PROSE_FILE = /\.(md|markdown|txt|rst|adoc)$/i;
 
-  function readFile(file) {
+  function readFile(file: File): Promise<string> {
     if (typeof file.text === "function") return file.text();
     return new Promise((resolve, reject) => {
       const r = new FileReader();
@@ -1998,18 +2175,19 @@
     });
   }
 
-  async function addFiles(list) {
-    const files = Array.prototype.slice.call(list || []);
+  async function addFiles(list: ArrayLike<File> | null | undefined) {
+    const files: File[] = Array.prototype.slice.call(list || []);
     if (!files.length || S.phase === "running") return;
     dropUndo();
-    const skipped = [];
-    let first = null;
+    const skipped: string[] = [];
+    let first: ContextField | null = null;
     for (const file of files) {
-      let text = null;
+      let text: string | null = null;
       if (file.size <= FILE_LIMIT) {
         try { text = await readFile(file); } catch (_) { text = null; }
       }
-      if (S.phase === "running") break;
+      // The council may have been convened while the file was read.
+      if ((S.phase as Phase) === "running") break;
       if (text == null || text.indexOf("\u0000") >= 0) {
         skipped.push(file.name);
         continue;
@@ -2020,7 +2198,7 @@
     saveContext();
     renderContextCounts();
     if (first) first.textEl.focus();
-    const notes = [];
+    const notes: string[] = [];
     if (skipped.length) notes.push("Skipped " + Core.listAnd(skipped) + ", because only text files up to 200 KB can be added.");
     const total = contextTotal();
     if (first && total > CONTEXT_LIMIT) {
@@ -2030,11 +2208,11 @@
     showContextNote(notes.join(" "));
   }
 
-  function carriesFiles(e) {
+  function carriesFiles(e: DragEvent): boolean {
     return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") >= 0);
   }
 
-  let contextTimer = 0;
+  let contextTimer: ReturnType<typeof setTimeout> | undefined;
   function saveContext() {
     store.set("quorum:context", JSON.stringify(ctxItems.map(it => ({ kind: it.kind, title: it.title, text: it.text }))));
   }
@@ -2044,14 +2222,14 @@
   }
 
   // Examples replace the draft; keep the draft so it can be put back.
-  let exampleUndo = null;
-  function snapshotForm() {
+  let exampleUndo: FormSnapshot | null = null;
+  function snapshotForm(): FormSnapshot {
     return { feature: els.feature.value, context: ctxItems.map(it => ({ kind: it.kind, title: it.title, text: it.text })) };
   }
   function formHasContent() {
     return !!els.feature.value.trim() || ctxItems.some(it => it.text.trim() || (it.title.trim() && it.title !== CONTEXT_KINDS[it.kind].title));
   }
-  function setForm(snap) {
+  function setForm(snap: FormSnapshot) {
     els.feature.value = snap.feature;
     clearContext();
     snap.context.forEach(c => addContext(c.kind, c.title, c.text));
@@ -2071,10 +2249,19 @@
   // With Quorum's local server, the session can be about a folder on this computer. Seats on Claude Code work inside
   // it, and agents with tools of their own are told where it is. value is the path the lookup was for, info what the
   // server found there, and listing the folder the browser shows.
-  const proj = { value: "", info: null, error: "", note: "", pending: null, seq: 0, listing: null, browsing: false };
-  let projectTimer = 0;
+  const proj: {
+    value: string,
+    info: FolderInfo | null,
+    error: string,
+    note: string,
+    pending: Promise<void> | null,
+    seq: number,
+    listing: FolderInfo | null,
+    browsing: boolean,
+  } = { value: "", info: null, error: "", note: "", pending: null, seq: 0, listing: null, browsing: false };
+  let projectTimer: ReturnType<typeof setTimeout> | undefined;
 
-  async function getFolder(path) {
+  async function getFolder(path: string): Promise<FolderInfo> {
     let res, body = null;
     try {
       res = await fetch(localUrl("folder?path=" + encodeURIComponent(path)));
@@ -2086,7 +2273,7 @@
     return body;
   }
 
-  function checkProject(text) {
+  function checkProject(text: string): Promise<void> {
     clearTimeout(projectTimer);
     const seq = ++proj.seq;
     proj.value = text;
@@ -2101,7 +2288,7 @@
       if (seq !== proj.seq) return;
       proj.info = info;
       proj.listing = info;
-    }, e => {
+    }, (e: { message: string }) => {
       if (seq === proj.seq) proj.error = e.message;
     }).then(() => {
       if (seq !== proj.seq) return;
@@ -2113,14 +2300,14 @@
     return done;
   }
 
-  function chooseProject(path) {
+  function chooseProject(path: string): Promise<void> {
     els.projectPath.value = path;
     proj.note = "";
     store.set("quorum:project", path);
     return checkProject(path);
   }
 
-  function projectStatusHTML() {
+  function projectStatusHTML(): { html: string, error?: boolean } {
     const i = proj.info;
     if (proj.note) return { html: Core.esc(proj.note), error: true };
     if (!proj.value) return { html: "Choose the folder of the project this feature is for. Seats on Claude Code work inside it, reading and searching the code without changing it." };
@@ -2149,8 +2336,8 @@
     if (!proj.browsing) return;
     const l = proj.listing, off = running ? " disabled" : "";
     setText(els.projectWhere, l ? l.path : "Loading\u2026");
-    const item = (path, label, up) => '<li><button type="button" class="project-dir' + (up ? " is-up" : "") + '" data-path="' + Core.esc(path) + '"' + off + ">" + label + "</button></li>";
-    const items = [];
+    const item = (path: string, label: string, up: boolean) => '<li><button type="button" class="project-dir' + (up ? " is-up" : "") + '" data-path="' + Core.esc(path) + '"' + off + ">" + label + "</button></li>";
+    const items: string[] = [];
     if (l && l.parent) items.push(item(l.parent, '<span aria-hidden="true">\u2191 </span>Parent folder', true));
     if (l) l.dirs.forEach(d => items.push(item(d.path, Core.esc(d.name) + "/", false)));
     if (l && !l.dirs.length) items.push('<li class="project-empty">' + (l.unreadable ? "This folder can't be read." : "No folders inside.") + "</li>");
@@ -2163,13 +2350,22 @@
   // With Quorum's local server, every session is saved as it runs: its settings, and the handoff each step makes in
   // each round. A saved session opened again, after the page or the server stopped, carries on from its handoffs.
   // Saves go one after another, so a session's status is written after the handoffs that led to it.
-  const saved = { list: [], listed: false, listError: "", queue: Promise.resolve(), pending: 0, error: "", confirm: "" };
+  const saved: {
+    list: Session[],
+    listed: boolean,
+    listError: string,
+    queue: Promise<unknown>,
+    pending: number,
+    error: string,
+    confirm: string,
+  } = { list: [], listed: false, listError: "", queue: Promise.resolve(), pending: 0, error: "", confirm: "" };
 
   function canSave() {
     return !!(local && local.sessions);
   }
 
-  async function api(method, route, body) {
+  // What the local server answered, as JSON.
+  async function api(method: string, route: string, body?: unknown): Promise<any> {
     let res, out = null;
     try {
       res = await fetch(localUrl(route), body === undefined ? { method } :
@@ -2182,22 +2378,23 @@
     return out;
   }
 
-  function save(request) {
-    const id = S.sessionId;
+  // sid names the session to save to, when it isn't the open one.
+  function save(request: (id: string) => Promise<unknown>, sid?: string | null) {
+    const id = sid || S.sessionId;
     if (!id) return;
     saved.pending += 1;
     schedule();
     saved.queue = saved.queue
       .then(() => request(id))
-      .catch(e => { if (id === S.sessionId) saved.error = e.message; })
+      .catch((e: Error) => { if (id === S.sessionId) saved.error = e.message; })
       .then(() => { saved.pending -= 1; schedule(); });
   }
 
-  function saveHandoff(round, h) {
+  function saveHandoff(round: number, h: Handoffs[string]) {
     save(id => api("PUT", "sessions/" + id + "/rounds/" + round + "/" + h.from, { kind: h.kind, data: h.data }));
   }
 
-  function sessionTitle() {
+  function sessionTitle(): string {
     const plan = planHandoff() || handedOff("chair");
     const title = plan ? Core.titleOf(plan.text) : "";
     return title || brief().feature.trim().split("\n")[0].slice(0, 120) || "Untitled session";
@@ -2209,7 +2406,7 @@
     if (S.phase !== "running") save(() => refreshSessions());
   }
 
-  function setSessionHash(id) {
+  function setSessionHash(id: string | null) {
     try { history.replaceState(null, "", id ? "#session=" + id : location.pathname + location.search); } catch (_) { /* no history here */ }
   }
 
@@ -2226,7 +2423,7 @@
       setSessionHash(S.sessionId);
       Core.HANDED_IN.forEach(k => saveHandoff(S.round, S.handoffs[k]));
       save(() => refreshSessions());
-    } catch (e) {
+    } catch (e: any) {
       saved.error = e.message;
     }
     schedule();
@@ -2237,32 +2434,32 @@
     try {
       saved.list = (await api("GET", "sessions")).sessions;
       saved.listError = "";
-    } catch (e) {
+    } catch (e: any) {
       saved.listError = e.message;
     }
     saved.listed = true;
     schedule();
   }
 
-  function kindOfContext(title) {
+  function kindOfContext(title: string | undefined): string {
     const k = Object.keys(CONTEXT_KINDS).filter(x => CONTEXT_KINDS[x].title && CONTEXT_KINDS[x].title === title)[0];
     return k || "other";
   }
 
   // Opens a saved session where it got to. Steps that were running when it stopped are shown as stopped, so Resume
   // asks for them again; a finished session is ready for questions and input on its plan.
-  async function openSession(id) {
+  async function openSession(id: string) {
     if (S.phase === "running" || S.connecting) return;
-    let o;
+    let o: { session: Session, handoffs: { round: number, node: string, kind: string, data: unknown }[] };
     try {
       o = await api("GET", "sessions/" + encodeURIComponent(id));
-    } catch (e) {
+    } catch (e: any) {
       saved.listError = "That session couldn't be opened. " + e.message;
       els.sessions.open = true;
       render();
       return;
     }
-    const rounds = {};
+    const rounds: Record<number, Handoffs> = {};
     o.handoffs.forEach(h => {
       rounds[h.round] = rounds[h.round] || {};
       rounds[h.round][h.node] = Graph.handoff(h.node, h.kind, h.data);
@@ -2279,6 +2476,7 @@
     S.token += 1;
     S.session += 1;
     resetSeats();
+    resetConvos(true);
     S.sessionId = o.session.id;
     saved.error = "";
     S.round = last;
@@ -2312,7 +2510,7 @@
       review: !!(S.handoffs.brief.data.review && S.handoffs.chair),
       plan: !!S.handoffs.tally,
     };
-    S.sel = { proposals: "A", council: "advocate", review: "scaling" };
+    S.sel = { proposals: "A", questions: "A", council: "advocate", review: "scaling" };
     S.clock = { startedAt: 0, accumulated: o.session.elapsed || 0 };
     clearInterval(clockTimer);
     S.notice = null;
@@ -2332,10 +2530,10 @@
     scrollToSection(finished ? els.secPlan : els.secProposals);
   }
 
-  async function deleteSession(id) {
+  async function deleteSession(id: string) {
     try {
       await api("DELETE", "sessions/" + encodeURIComponent(id));
-    } catch (e) {
+    } catch (e: any) {
       saved.listError = "That session couldn't be deleted. " + e.message;
     }
     if (id === S.sessionId) {
@@ -2345,9 +2543,9 @@
     await refreshSessions();
   }
 
-  function fmtWhen(iso) {
+  function fmtWhen(iso: string): string {
     const d = new Date(iso);
-    if (isNaN(d)) return "";
+    if (isNaN(d.getTime())) return "";
     return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
 
@@ -2359,7 +2557,7 @@
     setText(els.sessionsStatus, !saved.listed ? "" : !list.length ? "None yet" :
       list.length + (list.length === 1 ? " session" : " sessions") + (open ? ", " + open + " unfinished" : ""));
     setText(els.sessionsIntro, saved.listError ||
-      "Each session is saved in " + local.sessions.file + " as it runs, so you can come back to it after closing this page or stopping the server.");
+      "Each session is saved in " + (local as LocalInfo & { sessions: { file: string } }).sessions.file + " as it runs, so you can come back to it after closing this page or stopping the server.");
     els.sessionsIntro.classList.toggle("is-error", !!saved.listError);
     const off = running ? " disabled" : "";
     setHTML(els.sessionList, list.map(x => {
@@ -2388,7 +2586,7 @@
 
   /* ---------- Revisions ---------- */
 
-  function showReviseNote(text) {
+  function showReviseNote(text: string) {
     els.reviseNote.textContent = text;
     els.reviseNote.hidden = !text;
   }
@@ -2443,7 +2641,7 @@
     els.reviseBtn.disabled = S.connecting;
   }
 
-  function roundInput(h) {
+  function roundInput(h: Handoffs | undefined): string {
     return h && h.revision && h.revision.data ? h.revision.data.input : "";
   }
 
@@ -2451,19 +2649,536 @@
     toggle(els.secRounds, S.past.length > 0 && S.phase !== "idle");
     if (!S.past.length) return;
     const key = S.session + ":" + S.past.length;
-    if (els.roundsList._key === key) return;
-    els.roundsList._key = key;
+    const roundsList = els.roundsList as HTMLElement & Drawn;
+    if (roundsList._key === key) return;
+    roundsList._key = key;
     const all = S.past.concat([S.handoffs]);
-    const html = [];
+    const html: string[] = [];
     for (let i = S.past.length - 1; i >= 0; i--) {
       const s = Core.sessionOf(S.past[i]), t = s.tally, won = t ? t.winner || s.decided : null;
       const titles = Core.titlesOf(s.proposals);
       html.push('<details class="round"><summary>Round ' + (i + 1) + ": " + Core.esc(Core.titleOf(s.plan) || "The plan") +
         (won ? '<span class="round-meta">Built on Proposal ' + won + (titles[won] ? ", \u201C" + Core.esc(titles[won]) + "\u201D" : "") + "</span>" : "") +
         '</summary><div class="round-body"><article class="doc">' + Core.renderMarkdown(s.plan || "") + "</article>" +
-        '<p class="round-label">Your input on this plan</p><blockquote class="motion-quote">' + Core.esc(roundInput(all[i + 1])) + "</blockquote></div></details>");
+        '<p class="round-label">Your input on this plan</p><blockquote class="motion-quote">' + Core.esc(roundInput(all[i + 1])) + "</blockquote>" +
+        '<p class="round-actions"><button type="button" class="btn btn-quiet btn-small" data-convo-round="' + (i + 1) + '">Every agent\u2019s conversation in round ' + (i + 1) + "</button></p></div></details>");
     }
     els.roundsList.innerHTML = html.join("");
+  }
+
+  /* ---------- Conversations ---------- */
+
+  // Everything each agent was sent and did, kept so any agent's whole conversation on any step can be read: the
+  // prompt, its reasoning where the provider shows it, what it wrote along the way, each tool it used and what came
+  // back, and the answer the step took. A step that ran more than once, after a retry or a resume, keeps every
+  // attempt. The transcript's shape is described in core.ts.
+  // Transcripts made in this page are in mem. With Quorum's local server they're saved with the session as they
+  // grow, and a reopened session's are fetched into loaded as they're viewed. A step with none, from a session kept
+  // only in this browser or saved before conversations were kept, is rebuilt from its round's handoffs.
+  const convos: {
+    mem: Record<string, LiveTranscript[]>,
+    loaded: Record<string, Transcript[] | "loading">,
+    failed: Record<string, string>,
+    all: boolean,
+    fromServer: boolean,
+    gen: number,
+    dirty: Record<string, LiveTranscript>,
+    timer: ReturnType<typeof setTimeout> | 0,
+    view: ConvoStep | null,
+    opener: HTMLElement | null,
+  } = { mem: {}, loaded: {}, failed: {}, all: false, fromServer: false, gen: 0, dirty: {}, timer: 0, view: null, opener: null };
+  const TRANSCRIPT_SAVE_MS = 4000;
+
+  function convoKey(round: number, node: string): string {
+    return round + ":" + node;
+  }
+
+  // fromServer: the session was opened from the database, which may hold conversations this page hasn't seen.
+  function resetConvos(fromServer: boolean) {
+    flushTranscripts();
+    closeConvo();
+    convos.gen += 1;
+    convos.mem = {};
+    convos.loaded = {};
+    convos.failed = {};
+    convos.all = false;
+    convos.fromServer = !!fromServer;
+  }
+
+  function startTranscript(node: string, agent: Agent, prompt: string, cwd: string): LiveTranscript {
+    const t: LiveTranscript = {
+      v: 1, attempt: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), round: S.round, node,
+      agent: { provider: agent.provider, model: agent.model }, served: "", cwd: cwd || "", tools: [],
+      started: new Date().toISOString(), ended: "", status: "running", error: null, truncated: false, usage: null,
+      entries: [{ type: "prompt", text: prompt }],
+    };
+    // The session it's saved with, which isn't part of what's saved.
+    Object.defineProperty(t, "sid", { value: S.sessionId });
+    const key = convoKey(t.round, node);
+    (convos.mem[key] = convos.mem[key] || []).push(t);
+    keepTranscript(t, false);
+    return t;
+  }
+
+  // What the provider reports as the agent works, as turns of its conversation.
+  function traceInto(t: LiveTranscript, kind: TraceKind, d: unknown) {
+    const o: Record<string, any> = d && typeof d === "object" ? d : {};
+    const str = (v: unknown) => (typeof v === "string" ? v : "");
+    if (kind === "start") {
+      if (str(o.model)) t.served = o.model;
+      if (Array.isArray(o.tools)) t.tools = o.tools.filter((x: unknown) => typeof x === "string");
+    } else if (kind === "text" || kind === "thinking") {
+      if (!str(o.text).trim()) return;
+      t.entries.push({ type: kind, text: o.text });
+    } else if (kind === "tool") {
+      t.entries.push({ type: "tool", id: str(o.id), name: str(o.name), detail: str(o.detail), input: o.input === undefined ? null : o.input, result: null, error: false });
+    } else if (kind === "tool_result") {
+      const call = t.entries.filter(e => e.type === "tool" && e.id && e.id === o.id && e.result === null)[0];
+      if (call) Object.assign(call, { result: str(o.content), error: !!o.error });
+      else t.entries.push({ type: "tool", id: str(o.id), name: "", detail: "", input: null, result: str(o.content), error: !!o.error });
+    } else if (kind === "event") {
+      t.entries.push({ type: "event", name: str(o.name), data: str(o.data) });
+    } else if (kind === "usage") {
+      t.usage = o;
+    } else {
+      return;
+    }
+    keepTranscript(t, false);
+  }
+
+  // The answer as the step received it. An agent that wrote it as its last message already has it there.
+  function answered(t: LiveTranscript, text: string, served: string, truncated: boolean) {
+    t.served = served || t.served;
+    t.truncated = !!truncated;
+    addText(t, text, "final");
+  }
+
+  function addText(t: LiveTranscript, text: string, mark: "final" | "partial") {
+    const s = String(text || "");
+    if (!s.trim()) return;
+    const last = t.entries[t.entries.length - 1];
+    const same = last && last.type === "text" && last.text.trim() === s.trim();
+    const entry = (same ? last : { type: "text", text: s }) as Extract<Entry, { type: "text" }>;
+    entry[mark] = true;
+    if (!same) t.entries.push(entry);
+  }
+
+  // e is null when the step finished, or else what stopped it.
+  function closeTranscript(t: LiveTranscript, e: Thrown) {
+    t.ended = new Date().toISOString();
+    if (!e) {
+      t.status = "done";
+    } else {
+      const code = typeof e.code === "string" ? e.code : "upstream_error";
+      t.status = code === "cancelled" ? "stopped" : "error";
+      if (t.status === "error") t.error = { code, message: typeof e.message === "string" ? e.message : "" };
+      if (!t.entries.some(x => x.type === "text" && x.final) && typeof e.text === "string") addText(t, e.text, "partial");
+    }
+    keepTranscript(t, true);
+  }
+
+  // A transcript is saved with its session a few seconds after it changes, and at once when its step ends.
+  function keepTranscript(t: LiveTranscript, now: boolean) {
+    if (t.sid) {
+      convos.dirty[t.sid + "|" + convoKey(t.round, t.node) + "|" + t.attempt] = t;
+      if (now) flushTranscripts();
+      else if (!convos.timer) convos.timer = setTimeout(flushTranscripts, TRANSCRIPT_SAVE_MS);
+    }
+    if (convos.view) schedule();
+  }
+
+  function flushTranscripts() {
+    clearTimeout(convos.timer);
+    convos.timer = 0;
+    const dirty = convos.dirty;
+    convos.dirty = {};
+    Object.keys(dirty).forEach(k => {
+      const t = dirty[k];
+      save(() => api("PUT", "sessions/" + t.sid + "/rounds/" + t.round + "/" + t.node + "/transcripts/" + t.attempt, { data: t }), t.sid);
+    });
+  }
+
+  function roundHandoffs(round: number): Handoffs {
+    return round === S.round ? S.handoffs : S.past[round - 1] || {};
+  }
+
+  // Every agent step there's a conversation for, round by round, in the order the graph runs them.
+  function convoSteps(): ConvoStep[] {
+    const list: ConvoStep[] = [];
+    for (let r = 1; r <= S.round; r++) {
+      const hs = roundHandoffs(r);
+      if (!hs.brief) continue;
+      Core.graphFor(hs.brief.data).order.forEach(node => {
+        if (!S.seats[node]) return;
+        const h = hs[node], mem = convos.mem[convoKey(r, node)], seat = r === S.round ? S.seats[node] : null;
+        if (h && h.kind === "amend" && !h.data.amended) return; // no one asked anything, so no agent was asked either
+        if (h || (mem && mem.length) || (seat && seat.status !== "idle" && !seat.skipped)) list.push({ round: r, node });
+      });
+    }
+    return list;
+  }
+
+  // What a step is and who took it, for the picker.
+  function convoStepName(node: string): string {
+    const st = Core.stepOf(node), who = CAST[node].name;
+    if (isBuilder(node)) return "Proposal " + node + " · " + who;
+    if (isAsk(node)) return "Questions on Proposal " + st.letter + " · " + who;
+    if (isAmend(node)) return "Answers on Proposal " + st.letter + " · " + who;
+    if (isCouncil(node)) return "Review · " + who;
+    if (isReviewer(node)) return "Final review · " + who;
+    return (node === "final" ? "Plan, revised after the final review" : "Plan") + " · " + who;
+  }
+
+  const CONVO_STATUS: Record<string, string> = { thinking: "working", writing: "writing", error: "couldn't finish", stopped: "stopped" };
+  function convoOptionLabel(s: ConvoStep): string {
+    const st = s.round === S.round ? CONVO_STATUS[S.seats[s.node].status] : "";
+    return convoStepName(s.node) + (st ? " (" + st + ")" : "");
+  }
+
+  function convoAria(id: string): string {
+    return "Full conversation: " + convoStepName(id).replace(" · ", ", ");
+  }
+
+  // The link beside a byline to its agent's whole conversation, once the agent has started.
+  function renderConvoLink(el: HTMLElement, id: string) {
+    const seat = S.seats[id];
+    toggle(el, seat.status !== "idle" && !seat.skipped);
+    if (el.getAttribute("data-node") !== id) {
+      el.setAttribute("data-node", id);
+      el.setAttribute("aria-label", convoAria(id));
+    }
+  }
+
+  function convoLinkHTML(id: string): string {
+    const seat = S.seats[id];
+    if (seat.status === "idle" || seat.skipped) return "";
+    return ' <button type="button" class="link-btn convo-link" data-convo="' + id + '" aria-label="' + Core.esc(convoAria(id)) + '">Full conversation</button>';
+  }
+
+  // The step to show when the viewer is opened from the rail: whatever is working now, or else the latest.
+  function defaultConvoStep(): ConvoStep | null {
+    const steps = convoSteps(), now = steps.filter(x => x.round === S.round);
+    return now.filter(x => S.seats[x.node].status === "thinking" || S.seats[x.node].status === "writing")[0] ||
+      now[now.length - 1] || steps[steps.length - 1] || null;
+  }
+
+  function openConvo(round: number, node: string, opener?: HTMLElement | null) {
+    if (!S.seats[node]) return;
+    convos.view = { round, node };
+    convos.opener = opener || null;
+    toggle(els.convo, true);
+    document.documentElement.classList.add("is-convo-open");
+    render();
+    focusQuietly(els.convoTitle);
+  }
+
+  function closeConvo() {
+    if (!convos.view) return;
+    convos.view = null;
+    toggle(els.convo, false);
+    document.documentElement.classList.remove("is-convo-open");
+    let back = convos.opener;
+    convos.opener = null;
+    // A link inside the questions is drawn again as they change, so find it again.
+    if (back && !back.isConnected && back.getAttribute("data-convo")) back = els.questionsDoc.querySelector<HTMLElement>('[data-convo="' + back.getAttribute("data-convo") + '"]');
+    if (back && back.isConnected && !back.hidden) focusQuietly(back);
+  }
+
+  function stepConvo(by: number) {
+    const v = convos.view;
+    if (!v) return;
+    const steps = convoSteps();
+    let i = -1;
+    steps.forEach((x, k) => { if (x.round === v.round && x.node === v.node) i = k; });
+    const next = steps[i + by];
+    if (!next) return;
+    convos.view = { round: next.round, node: next.node };
+    render();
+    if (document.activeElement && (document.activeElement as HTMLButtonElement).disabled) els.convoStep.focus();
+  }
+
+  function transcriptRows(o: any): { round: number, node: string, data: Transcript }[] {
+    return (o && Array.isArray(o.transcripts) ? o.transcripts : [])
+      .filter((x: any) => x && x.data && typeof x.data === "object" && Array.isArray(x.data.entries));
+  }
+
+  function loadTranscripts(round: number, node: string) {
+    const key = convoKey(round, node), gen = convos.gen;
+    convos.loaded[key] = "loading";
+    api("GET", "sessions/" + encodeURIComponent(S.sessionId as string) + "/rounds/" + round + "/" + node + "/transcripts").then(o => {
+      if (gen !== convos.gen) return;
+      convos.loaded[key] = transcriptRows(o).map(x => x.data);
+      schedule();
+    }, (e: Error) => {
+      if (gen !== convos.gen) return;
+      convos.loaded[key] = [];
+      convos.failed[key] = e.message;
+      schedule();
+    });
+  }
+
+  // A step's attempts, oldest first: what was saved of it, and what this page has made since. With none, it's rebuilt.
+  function attemptsFor(round: number, node: string): Transcript[] {
+    const key = convoKey(round, node), mem = convos.mem[key] || [], loaded = convos.loaded[key];
+    const ids = mem.map(t => t.attempt);
+    const got = Array.isArray(loaded) ? loaded.filter(t => ids.indexOf(t.attempt) < 0) : [];
+    const all = got.concat(mem).sort((a, b) => (a.started < b.started ? -1 : a.started > b.started ? 1 : 0));
+    if (all.length || convos.loaded[key] === "loading") return all;
+    const rebuilt = rebuildTranscript(round, node);
+    return rebuilt ? [rebuilt] : [];
+  }
+
+  // A step with no transcript, rebuilt from its round's handoffs: the prompt its step makes from what it was handed,
+  // and the answer it handed on. What the agent did in between wasn't kept.
+  function rebuildTranscript(round: number, node: string): Transcript | null {
+    const hs = roundHandoffs(round), h = hs[node];
+    if (!h || !h.data || !h.data.agent || !hs.brief || !PROVIDERS[h.data.agent.provider]) return null;
+    const gnode = Core.graphFor(hs.brief.data).nodes[node], step = Core.STEPS[h.kind];
+    if (!gnode || !step || !step.prompt || !gnode.needs.every(d => hs[d])) return null;
+    const inputs: Handoffs = {};
+    gnode.needs.forEach(d => { inputs[d] = hs[d]; });
+    const agent: Agent = h.data.agent, kind = PROVIDERS[agent.provider], project = hs.brief.data.project || null;
+    let prompt: string;
+    try {
+      prompt = step.prompt({ node, kind: h.kind, inputs }, { explore: !!kind.agentic, inProject: !!(kind.local && project) });
+    } catch (_) {
+      return null;
+    }
+    return {
+      v: 1, attempt: "rebuilt", round, node, agent: { provider: agent.provider, model: agent.model }, served: h.data.served || "",
+      cwd: kind.local && project ? project.path : "", tools: [], started: "", ended: "", status: "done", error: null,
+      truncated: !!h.data.truncated, usage: null, rebuilt: true,
+      entries: [{ type: "prompt", text: prompt }, { type: "text", text: String(h.data.text || ""), final: true }],
+    };
+  }
+
+  function transcriptAgent(t: Transcript): string {
+    if (!t.agent || !PROVIDERS[t.agent.provider]) return "";
+    return Core.agentLabel(t.served ? { provider: t.agent.provider, model: t.served } : t.agent, { customUrl: creds.urls.custom });
+  }
+
+  function convoMeta(v: ConvoStep, attempts: Transcript[]): string {
+    const t = attempts[attempts.length - 1];
+    const parts = S.round > 1 ? ["Round " + v.round] : [];
+    if (t) {
+      parts.push(transcriptAgent(t));
+      if (t.cwd) parts.push("in " + t.cwd);
+      const ms = t.started && t.ended ? Date.parse(t.ended) - Date.parse(t.started) : NaN;
+      parts.push((Core.TRANSCRIPT_STATUS[t.status] || "") + (Number.isFinite(ms) ? " after " + fmtDuration(ms) : ""));
+      parts.push(Core.usageText(t.usage));
+      if (attempts.length > 1) parts.push(attempts.length + " attempts");
+    }
+    return parts.filter(Boolean).join(" · ");
+  }
+
+  function attemptHead(t: Transcript, i: number, n: number): string {
+    const where = n > 1 ? "Attempt " + (i + 1) + " of " + n : "";
+    let what = "";
+    if (t.status === "error") {
+      const agent = t.agent && PROVIDERS[t.agent.provider] ? t.agent : null;
+      what = "Couldn't finish: " + errText(t.error ? t.error.code : "", { agent, error: t.error }, "short") +
+        (t.error && t.error.message ? " (" + t.error.message + ")" : "");
+    } else if (t.status === "stopped") {
+      what = "Stopped before it finished.";
+    }
+    return [where, what].filter(Boolean).join(" · ");
+  }
+
+  function fold(cls: string, open: boolean, summary: string, size: string, body: string): string {
+    return '<details class="turn ' + cls + '"' + (open ? " open" : "") + "><summary>" + summary +
+      (size ? '<span class="turn-size"> · ' + Core.esc(size) + "</span>" : "") + "</summary>" + body + "</details>";
+  }
+  const preHTML = (text: string) => '<pre class="turn-pre">' + Core.esc(text) + "</pre>";
+  const labelHTML = (text: string) => '<p class="turn-label">' + Core.esc(text) + "</p>";
+  function lines(text: string): string {
+    const n = text ? text.replace(/\n$/, "").split("\n").length : 0;
+    return n ? fmtNum(n) + (n === 1 ? " line" : " lines") : "empty";
+  }
+  function noteBlock(id: string, text: string): Block {
+    return { id, sig: text, html: () => '<p class="convo-note">' + Core.esc(text) + "</p>" };
+  }
+
+  // One turn of the conversation, as a block the viewer shows.
+  function turnBlock(e: Entry, id: string, who: string): Block {
+    const esc = Core.esc;
+    if (e.type === "prompt") {
+      return { id, sig: "p" + e.text.length, html: () => fold("is-prompt", true, '<span class="turn-who">Quorum</span> sent ' + esc(Core.midName(who)) + " this prompt", fmtNum(e.text.length) + " characters", preHTML(e.text)) };
+    }
+    if (e.type === "thinking") {
+      return { id, sig: "k" + e.text.length, html: () => fold("is-thinking", false, '<span class="turn-who">' + esc(who) + "</span> thought", fmtNum(Core.wordCount(e.text)) + " words", preHTML(e.text)) };
+    }
+    if (e.type === "text") {
+      const what = e.final ? "\u2019s answer" : e.partial ? " had written this when it stopped" : " wrote";
+      return {
+        id, sig: "x" + e.text.length + (e.final ? "f" : "") + (e.partial ? "p" : ""),
+        html: () => '<div class="turn is-' + (e.final ? "answer" : "text") + '"><p class="turn-head"><span class="turn-who">' + esc(who) + "</span>" + what +
+          '</p><div class="doc turn-doc">' + Core.renderMarkdown(e.text) + "</div></div>",
+      };
+    }
+    if (e.type === "tool") {
+      const state = e.result == null ? "no result yet" : e.error ? "failed" : lines(e.result);
+      return {
+        id, sig: "t" + (e.result == null ? "-" : e.result.length) + (e.error ? "e" : ""),
+        html: () => fold("is-tool" + (e.error ? " is-error" : ""), false, '<span class="turn-tool">' + esc(e.name || "A tool") + "</span>" + (e.detail ? " " + esc(e.detail) : ""), state,
+          (e.input != null ? labelHTML("Input") + preHTML(typeof e.input === "string" ? e.input : JSON.stringify(e.input, null, 2)) : "") +
+          (e.result == null ? "" : labelHTML(e.error ? "It failed" : "What came back") + preHTML(e.result))),
+      };
+    }
+    return { id, sig: "e" + String(e.data || "").length, html: () => fold("is-tool", false, '<span class="turn-tool">' + esc(e.name || "Event") + "</span>", "", preHTML(String(e.data || ""))) };
+  }
+
+  // The conversation as the blocks the viewer shows, in order. Each has an id saying which turn it is and a signature
+  // saying what it holds, so a turn that hasn't changed isn't drawn again, and a fold the reader opened stays open.
+  function convoBlocks(v: ConvoStep, attempts: Transcript[]): Block[] {
+    const key = convoKey(v.round, v.node), who = CAST[v.node].name, blocks: Block[] = [];
+    if (convos.failed[key]) blocks.push(noteBlock("failed", "The saved conversation couldn't be loaded, so it's rebuilt from the session. " + convos.failed[key]));
+    if (!attempts.length) {
+      const seat = v.round === S.round ? S.seats[v.node] : null;
+      blocks.push(noteBlock("empty", convos.loaded[key] === "loading" ? "Loading the conversation…" :
+        seat && seat.status === "idle" ? "This step hasn't started." : "No conversation was kept for this step."));
+      return blocks;
+    }
+    attempts.forEach((t, i) => {
+      const head = attemptHead(t, i, attempts.length);
+      if (head) blocks.push({ id: "h" + i, sig: head, html: () => '<p class="convo-attempt' + (t.status === "error" ? " is-error" : "") + '">' + Core.esc(head) + "</p>" });
+      if (t.rebuilt) blocks.push(noteBlock("r" + i, "Rebuilt from the saved session: the prompt as this step makes it from what it was handed, and the answer it handed on. What the agent did in between wasn't kept."));
+      t.entries.forEach((e, j) => blocks.push(turnBlock(e, "t" + i + "." + j, who)));
+    });
+    // What the agent is doing right now, until it's part of the transcript.
+    const last = attempts[attempts.length - 1], seat = S.seats[v.node];
+    if (last.status === "running" && v.round === S.round && (seat.status === "thinking" || seat.status === "writing")) {
+      const end = last.entries[last.entries.length - 1];
+      const written = end && end.type === "text" && end.text.trim() === seat.text.trim();
+      if (seat.status === "writing" && seat.text.trim() && !written) {
+        blocks.push({
+          id: "live", sig: "w" + seat.text.length, live: true,
+          html: () => '<div class="turn is-text is-live"><p class="turn-head"><span class="turn-who">' + Core.esc(who) + '</span> is writing</p><div class="doc turn-doc">' + Core.renderMarkdown(seat.text) + "</div></div>",
+          after: el => appendCaret(el.querySelector(".turn-doc") as Element),
+        });
+      } else {
+        const p = placeholderFor(v.node);
+        blocks.push({ id: "live", sig: "p" + p.text, live: true, html: () => '<p class="placeholder convo-wait"><span class="pulse" aria-hidden="true"></span><span>' + Core.esc(p.text) + "</span></p>" });
+      }
+    }
+    return blocks;
+  }
+
+  function patchBlocks(target: HTMLElement, blocks: Block[], key: string) {
+    const root = target as HTMLElement & Drawn;
+    if (root._key !== key) {
+      root._key = key;
+      root.innerHTML = "";
+      root.scrollTop = 0;
+    }
+    const pinned = root.scrollHeight - root.scrollTop - root.clientHeight < 60;
+    blocks.forEach((b, i) => {
+      const old = root.children[i] as (HTMLElement & Drawn) | undefined;
+      if (old && old._id === b.id && old._sig === b.sig) return;
+      const box = document.createElement("div");
+      box.innerHTML = b.html();
+      const el = box.firstElementChild as HTMLElement & Drawn;
+      el._id = b.id;
+      el._sig = b.sig;
+      if (b.after) b.after(el);
+      if (old && old._id === b.id && old.tagName === "DETAILS" && el.tagName === "DETAILS") (el as HTMLDetailsElement).open = (old as HTMLDetailsElement).open;
+      if (old) root.replaceChild(el, old);
+      else root.appendChild(el);
+    });
+    while (root.children.length > blocks.length) root.removeChild(root.lastElementChild as Element);
+    // A reader at the bottom of a conversation that's still going stays at the bottom.
+    if (pinned && blocks.length && blocks[blocks.length - 1].live) root.scrollTop = root.scrollHeight;
+  }
+
+  function renderConvo() {
+    const v = convos.view;
+    if (!v) return;
+    const key = convoKey(v.round, v.node);
+    let steps = convoSteps();
+    if (!steps.some(x => convoKey(x.round, x.node) === key)) steps = steps.concat([v]);
+    const labels = steps.map(convoOptionLabel);
+    const sig = steps.map((x, i) => convoKey(x.round, x.node) + "=" + labels[i]).join("|");
+    const picker = els.convoStep as HTMLSelectElement & Drawn;
+    if (picker._sig !== sig) {
+      picker._sig = sig;
+      const grouped = steps.some(x => x.round !== steps[0].round);
+      let html = "", round = 0;
+      steps.forEach((x, i) => {
+        if (grouped && x.round !== round) {
+          html += (round ? "</optgroup>" : "") + '<optgroup label="Round ' + x.round + '">';
+          round = x.round;
+        }
+        html += '<option value="' + convoKey(x.round, x.node) + '">' + Core.esc(labels[i]) + "</option>";
+      });
+      els.convoStep.innerHTML = html + (grouped ? "</optgroup>" : "");
+    }
+    if (els.convoStep.value !== key) els.convoStep.value = key;
+    let i = -1;
+    steps.forEach((x, k) => { if (convoKey(x.round, x.node) === key) i = k; });
+    els.convoPrev.disabled = i <= 0;
+    els.convoNext.disabled = i < 0 || i >= steps.length - 1;
+    setLetter(els.convoPanel, isBuilder(v.node) ? v.node : Core.stepOf(v.node).letter || "");
+    if (S.sessionId && convos.fromServer && convos.loaded[key] === undefined) loadTranscripts(v.round, v.node);
+    const attempts = attemptsFor(v.round, v.node);
+    setText(els.convoMeta, convoMeta(v, attempts));
+    patchBlocks(els.convoBody, convoBlocks(v, attempts), S.session + "|" + key);
+    els.convoCopy.disabled = !attempts.length;
+    toggle(els.convoSaveAll, !!downloadsNS || !INSIDE);
+  }
+
+  function convoMarkdown(round: number, node: string): string {
+    const attempts = attemptsFor(round, node);
+    if (!attempts.length) return "";
+    return Core.conversationMarkdown(attempts, {
+      title: (S.round > 1 ? "Round " + round + ": " : "") + convoStepName(node),
+      who: CAST[node].name,
+      agent: transcriptAgent,
+    });
+  }
+
+  // Every agent's conversation in the session, as one Markdown file. A reopened session's are fetched first.
+  async function saveAllConvos(btn: HTMLElement) {
+    if (S.sessionId && convos.fromServer && !convos.all) {
+      const gen = convos.gen;
+      let o;
+      try {
+        o = await api("GET", "sessions/" + encodeURIComponent(S.sessionId) + "/transcripts");
+      } catch (_) {
+        flash(btn, "Couldn't load them");
+        return;
+      }
+      if (gen !== convos.gen) return;
+      const by: Record<string, Transcript[]> = {};
+      transcriptRows(o).forEach(x => { const k = convoKey(x.round, x.node); (by[k] = by[k] || []).push(x.data); });
+      convoSteps().forEach(x => { const k = convoKey(x.round, x.node); if (!by[k]) by[k] = []; });
+      Object.keys(by).forEach(k => { if (!Array.isArray(convos.loaded[k])) convos.loaded[k] = by[k]; });
+      convos.all = true;
+    }
+    const b = brief();
+    const head = "# Every agent\u2019s conversation\n\n" + String(b.feature).trim().split("\n").map(l => "> " + l).join("\n") + "\n\n" +
+      "Each step of the session, in the order it ran: what Quorum sent the agent, what the agent did with its tools, and the answer the step took.\n\n";
+    const body = convoSteps().map(x => convoMarkdown(x.round, x.node)).filter(Boolean).join("\n---\n\n");
+    await saveText("council-conversations-" + fileBase() + ".md", head + body, btn);
+  }
+
+  // The viewer holds focus while it's open, and Escape closes it.
+  function onConvoKey(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeConvo();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const all: HTMLElement[] = Array.prototype.slice.call(els.convoPanel.querySelectorAll("button, select, summary, [tabindex]"))
+      .filter((el: HTMLButtonElement) => el.tabIndex >= 0 && !el.disabled && !el.closest("[hidden]"));
+    if (!all.length) return;
+    const first = all[0], last = all[all.length - 1], at = document.activeElement;
+    if (e.shiftKey && (at === first || at === els.convoTitle)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && at === last) {
+      e.preventDefault();
+      first.focus();
+    }
   }
 
   /* ---------- Events ---------- */
@@ -2495,7 +3210,7 @@
       if (S.phase !== "running") convene();
     }
   });
-  function useExample(btn) {
+  function useExample(btn: HTMLElement) {
     const ex = EXAMPLES[Number(btn.getAttribute("data-example"))];
     if (!ex || S.phase === "running") return;
     const before = formHasContent() ? snapshotForm() : null;
@@ -2518,7 +3233,7 @@
     btn.addEventListener("click", () => {
       if (S.phase === "running") return;
       dropUndo();
-      addContext(btn.getAttribute("data-kind"), null, "", true);
+      addContext(btn.getAttribute("data-kind") as string, null, "", true);
       saveContext();
     });
   });
@@ -2526,30 +3241,30 @@
     if (S.phase !== "running") els.fileInput.click();
   });
   els.fileInput.addEventListener("change", () => {
-    const files = Array.prototype.slice.call(els.fileInput.files || []);
+    const files: File[] = Array.prototype.slice.call(els.fileInput.files || []);
     els.fileInput.value = "";
     addFiles(files);
   });
   els.context.addEventListener("dragover", e => {
     if (!carriesFiles(e) || S.phase === "running") return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
+    (e.dataTransfer as DataTransfer).dropEffect = "copy";
     els.context.classList.add("is-dropping");
   });
   els.context.addEventListener("dragleave", e => {
-    if (!els.context.contains(e.relatedTarget)) els.context.classList.remove("is-dropping");
+    if (!els.context.contains(e.relatedTarget as Node | null)) els.context.classList.remove("is-dropping");
   });
   els.context.addEventListener("drop", e => {
     els.context.classList.remove("is-dropping");
     if (!carriesFiles(e)) return;
     e.preventDefault();
-    addFiles(e.dataTransfer.files);
+    addFiles((e.dataTransfer as DataTransfer).files);
   });
   // A file dropped anywhere else would replace the page with the file, and the session with it.
   window.addEventListener("dragover", e => {
     if (!carriesFiles(e) || e.defaultPrevented) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = "none";
+    (e.dataTransfer as DataTransfer).dropEffect = "none";
   });
   window.addEventListener("drop", e => { if (carriesFiles(e)) e.preventDefault(); });
   exampleBtns.forEach(btn => {
@@ -2597,7 +3312,7 @@
       saveCreds();
       render();
     });
-    $("check-" + p).addEventListener("click", () => checkConnection(p));
+    $<HTMLButtonElement>("check-" + p).addEventListener("click", () => checkConnection(p));
   });
   els.reviseBtn.addEventListener("click", revise);
   els.reviseInput.addEventListener("input", () => { if (!els.reviseNote.hidden) showReviseNote(""); });
@@ -2609,20 +3324,20 @@
   });
   // Delete asks once more before it deletes.
   els.sessionList.addEventListener("click", e => {
-    const btn = e.target.closest("button");
+    const btn = (e.target as Element).closest("button");
     if (!btn || btn.disabled) return;
     if (btn.hasAttribute("data-open")) {
       saved.confirm = "";
-      openSession(btn.getAttribute("data-open"));
+      openSession(btn.getAttribute("data-open") as string);
     } else if (btn.hasAttribute("data-delete")) {
-      const id = btn.getAttribute("data-delete");
+      const id = btn.getAttribute("data-delete") as string;
       if (saved.confirm === id) {
         saved.confirm = "";
         deleteSession(id);
       } else {
         saved.confirm = id;
         render();
-        const again = els.sessionList.querySelector('[data-delete="' + id + '"]');
+        const again = els.sessionList.querySelector<HTMLElement>('[data-delete="' + id + '"]');
         if (again) again.focus();
       }
     }
@@ -2644,10 +3359,10 @@
   els.projectBrowse.addEventListener("click", () => {
     proj.browsing = !proj.browsing;
     if (proj.browsing && !proj.listing) {
-      getFolder(local.project || "").then(l => {
+      getFolder((local as LocalInfo).project || "").then(l => {
         if (!proj.listing) proj.listing = l;
         schedule();
-      }, e => {
+      }, (e: { message: string }) => {
         proj.error = e.message;
         schedule();
       });
@@ -2656,9 +3371,9 @@
   });
   // Choosing a folder in the browser makes it the project, and shows what's inside it.
   els.projectDirs.addEventListener("click", e => {
-    const btn = e.target.closest("button[data-path]");
+    const btn = (e.target as Element).closest<HTMLButtonElement>("button[data-path]");
     if (!btn || btn.disabled) return;
-    chooseProject(btn.getAttribute("data-path")).then(() => {
+    chooseProject(btn.getAttribute("data-path") as string).then(() => {
       render();
       const first = els.projectDirs.querySelector("button");
       if (first && proj.browsing) first.focus();
@@ -2695,11 +3410,11 @@
   });
   stageBtns.forEach(btn => {
     btn.addEventListener("click", () => {
-      const key = btn.getAttribute("data-stage");
+      const key = btn.getAttribute("data-stage") as Section;
       if (!S.revealed[key]) return;
-      const sec = $(btn.getAttribute("data-target"));
+      const sec = $(btn.getAttribute("data-target") as string);
       scrollToSection(sec);
-      focusQuietly(sec.querySelector(".sec-title"));
+      focusQuietly(sec.querySelector(".sec-title") as HTMLElement);
     });
   });
   els.copyPlan.addEventListener("click", async () => {
@@ -2710,6 +3425,41 @@
   });
   els.dlPlan.addEventListener("click", () => saveFile("plan", els.dlPlan));
   els.dlRecord.addEventListener("click", () => saveFile("record", els.dlRecord));
+  [els.propConvo, els.councilConvo, els.reviewConvo, els.planConvo].forEach(btn => {
+    btn.addEventListener("click", () => openConvo(S.round, btn.getAttribute("data-node") as string, btn));
+  });
+  els.questionsDoc.addEventListener("click", e => {
+    const btn = (e.target as Element).closest<HTMLElement>("[data-convo]");
+    if (btn) openConvo(S.round, btn.getAttribute("data-convo") as string, btn);
+  });
+  els.roundsList.addEventListener("click", e => {
+    const btn = (e.target as Element).closest<HTMLElement>("[data-convo-round]");
+    if (!btn) return;
+    const first = convoSteps().filter(x => x.round === Number(btn.getAttribute("data-convo-round")))[0];
+    if (first) openConvo(first.round, first.node, btn);
+  });
+  els.railConvo.addEventListener("click", () => {
+    const at = defaultConvoStep();
+    if (at) openConvo(at.round, at.node, els.railConvo);
+  });
+  els.convoClose.addEventListener("click", closeConvo);
+  els.convoScrim.addEventListener("click", closeConvo);
+  els.convo.addEventListener("keydown", onConvoKey);
+  els.convoStep.addEventListener("change", () => {
+    const m = /^(\d+):(.+)$/.exec(els.convoStep.value);
+    if (!m || !convos.view) return;
+    convos.view = { round: Number(m[1]), node: m[2] };
+    render();
+  });
+  els.convoPrev.addEventListener("click", () => stepConvo(-1));
+  els.convoNext.addEventListener("click", () => stepConvo(1));
+  els.convoCopy.addEventListener("click", async () => {
+    const v = convos.view;
+    const md = v ? convoMarkdown(v.round, v.node) : "";
+    if (!md) return;
+    flash(els.convoCopy, (await copyText(md)) ? "Copied" : "Couldn't copy");
+  });
+  els.convoSaveAll.addEventListener("click", () => saveAllConvos(els.convoSaveAll));
   window.addEventListener("resize", () => {
     autosize();
     ctxItems.forEach(it => sizeContext(it.textEl));
@@ -2719,21 +3469,21 @@
 
   const draft = store.get("quorum:draft");
   if (draft) els.feature.value = draft;
-  let savedContext = [];
+  let savedContext: any = [];
   try { savedContext = JSON.parse(store.get("quorum:context") || "[]"); } catch (_) { savedContext = []; }
   if (Array.isArray(savedContext)) {
-    savedContext.forEach(c => { if (c && typeof c === "object") addContext(c.kind, c.title, c.text); });
+    savedContext.forEach((c: any) => { if (c && typeof c === "object") addContext(c.kind, c.title, c.text); });
   }
   loadCreds();
   setProviderOptions();
   writeProvidersIntro();
   writeHermesHelp();
   fillDatalist("models-openrouter", modelLists.openrouter);
-  let savedAgents = null;
+  let savedAgents: any = null;
   try { savedAgents = JSON.parse(store.get("quorum:agents") || "null"); } catch (_) { savedAgents = null; }
   if (!savedAgents && INSIDE) {
     // Earlier versions saved only Claude tiers per role.
-    let tiers = null;
+    let tiers: any = null;
     try { tiers = JSON.parse(store.get("quorum:models") || "null"); } catch (_) { tiers = null; }
     if (tiers && typeof tiers === "object") {
       savedAgents = {};
@@ -2748,7 +3498,7 @@
     if (!EXTERNAL.some(providerReady)) els.providers.open = providersOpenedForSetup = true;
     Providers.listModels("openrouter", credsSnapshot()).then(list => {
       if (!list.length) return;
-      const seen = {};
+      const seen: Record<string, boolean> = {};
       const merged = Core.OPENROUTER_PRESETS.concat(list).filter(m => (seen[m.id] ? false : (seen[m.id] = true)));
       modelLists.openrouter = merged;
       fillDatalist("models-openrouter", merged);
@@ -2764,7 +3514,7 @@
       els.projectPath.value = start;
       if (start.trim()) checkProject(start.trim());
       if (!savedAgents && info.claudeCode.available) {
-        const agents = {};
+        const agents: Agents = {};
         ROLES.forEach(r => { agents[r.id] = { provider: "claude-code", model: "" }; });
         applyAgents(agents);
         if (providersOpenedForSetup) els.providers.open = false;

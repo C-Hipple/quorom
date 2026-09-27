@@ -1,11 +1,247 @@
-const Core = (function (Graph) {
+import { Graph, type GraphDef, type Handoffs, type NodeSpec, type Task } from "./graph";
+
+/* ---------- Types ---------- */
+
+// Proposals are lettered A, B and C, and seats and steps are named by id, such as "skeptic" or "ask-skeptic-B".
+export interface Cast {
+  id: string;
+  name: string;
+  short: string;
+}
+export interface Builder extends Cast { brief: string }
+export interface Councilor extends Cast { lens: string }
+export interface Reviewer extends Cast { topic: string, focus: string, lens: string }
+// Any seat, with whatever its kind of seat has.
+export type Seat = Cast & Partial<Builder & Councilor & Reviewer>;
+
+export interface Step {
+  cast: Seat;
+  letter: string | null;
+  asker?: string;
+}
+
+export interface Role {
+  id: string;
+  label: string;
+  seats: string[];
+  optional?: boolean;
+}
+
+export interface ProviderInfo {
+  label: string;
+  external: boolean;
+  local?: boolean;
+  agentic?: boolean;
+  needsKey?: boolean;
+  defaultUrl?: string;
+}
+
+export interface Agent {
+  provider: string;
+  model: string;
+}
+// The agent for each role, by role id.
+export type Agents = Record<string, Agent>;
+
+export interface ModelChoice {
+  id: string;
+  name: string;
+}
+
+export interface ContextItem {
+  title?: string;
+  text?: string;
+  [more: string]: unknown;
+}
+
+export interface Project {
+  path: string;
+  name: string;
+}
+
+export interface Brief {
+  feature: string;
+  context: ContextItem[];
+  length: string;
+  project?: Project | null;
+  questions?: boolean;
+  review?: boolean;
+}
+
+// What a prompt reads of the brief.
+export type BriefText = Pick<Brief, "feature" | "context" | "project">;
+
+export interface Ballot {
+  ranking: string[];
+  scores: Record<string, number>;
+}
+
+export interface TallyRow {
+  letter: string;
+  points: number;
+  firsts: number;
+  scoreSum: number;
+  ranks: Record<string, number>;
+  scores: Record<string, number | null>;
+}
+
+export interface Tally {
+  rows: Record<string, TallyRow>;
+  sorted: TallyRow[];
+  winner: string | null;
+  decidedBy: "points" | "firsts" | "scores" | "chair";
+  tied: string[];
+  tiedAtPoints: string[];
+  tiedAfterFirsts: string[];
+  unanimous: boolean;
+  maxPoints: number;
+  maxScore: number;
+}
+
+export interface Revision {
+  round: number;
+  input: string;
+  earlier: { round: number, input: string }[];
+  previous: {
+    round: number;
+    plan: string;
+    winner: string | null;
+    titles: Record<string, string>;
+    proposals: Record<string, string>;
+  };
+}
+
+export interface Findings {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+}
+
+// What each kind of step hands on. Handoffs written by an agent also carry AgentData.
+export interface AgentData {
+  truncated?: boolean;
+  agent?: Agent | null;
+  served?: string;
+}
+export interface ProposalData extends AgentData { text: string, title: string }
+export interface ReviewData extends AgentData { text: string, ballot: Ballot }
+export interface PlanData extends AgentData { text: string, decided: string | null }
+export interface QuestionData extends AgentData { text: string, questions: string[] }
+export interface AmendData extends AgentData { text: string, title: string, amended: boolean }
+export interface CheckData extends AgentData { text: string, findings: Findings }
+export interface FinalData extends AgentData { text: string }
+
+// A round's handoffs gathered back into the shape the prompts and the written record read. See sessionOf. The brief
+// is missing only from handoffs that don't have one, which a step's inputs always do.
+export interface SessionView {
+  brief: Brief;
+  revision: Revision | null;
+  proposals: Record<string, string>;
+  drafts: Record<string, string>;
+  asked: Record<string, Record<string, QuestionData | null>>;
+  amended: Record<string, boolean>;
+  reviews: Record<string, string>;
+  ballots: Record<string, Ballot>;
+  tally: Tally | null;
+  draft: string;
+  checks: Record<string, string>;
+  findings: Record<string, Findings | null>;
+  plan: string;
+  reviewed: boolean;
+  decided: string | null;
+}
+
+// A session as its written record reads it: setupLine says how it was run, and tiers what each seat ran on.
+export interface RecordView extends SessionView {
+  setupLine?: string;
+  tiers?: Record<string, string>;
+}
+
+// opts.inProject: the agent runs inside the project's folder with tools. opts.explore: it may have tools of its own.
+export interface PromptOptions {
+  inProject?: boolean;
+  explore?: boolean;
+}
+
+// A counted step works its data out itself. An agent step builds its prompt from its task's inputs and turns the
+// agent's answer into the data it hands on; skip, if it has one, hands on data without asking an agent.
+export interface CountedStep {
+  compute(task: Task): unknown;
+  prompt?: undefined;
+  result?: undefined;
+  skip?: undefined;
+}
+export interface AgentStep {
+  compute?: undefined;
+  prompt(task: Task, opts: PromptOptions): string;
+  result(task: Task, text: string): object;
+  skip?(task: Task): (AgentData & { text: string }) | null;
+}
+export type StepKind = CountedStep | AgentStep;
+
+export interface SSEEvent {
+  event: string;
+  data: string;
+}
+
+export interface SSEParser {
+  feed(chunk: string): void;
+  end(): void;
+}
+
+export interface Usage {
+  turns?: number;
+  costUsd?: number;
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+export type TranscriptStatus = "running" | "done" | "error" | "stopped";
+
+export type Entry =
+  | { type: "prompt", text: string }
+  | { type: "thinking", text: string }
+  | { type: "text", text: string, final?: boolean, partial?: boolean }
+  | { type: "tool", id: string, name: string, detail: string, input: unknown, result: string | null, error: boolean }
+  | { type: "event", name: string, data: string };
+
+export interface Transcript {
+  v: number;
+  attempt: string;
+  round: number;
+  node: string;
+  agent: Agent;
+  served: string;
+  cwd: string;
+  tools: string[];
+  started: string;
+  ended: string;
+  status: TranscriptStatus;
+  error: { code: string, message: string } | null;
+  truncated: boolean;
+  usage: Usage | null;
+  rebuilt?: boolean;
+  entries: Entry[];
+}
+
+// An error from a provider or a step: one of Quorum's error codes, a message, and any text written before it.
+export interface StepError {
+  code: string;
+  message?: string;
+  text?: string;
+  status?: number;
+}
+
+export const Core = (function (Graph) {
   "use strict";
 
   /* ---------- The cast ---------- */
 
   const LETTERS = ["A", "B", "C"];
 
-  const BUILDERS = [
+  const BUILDERS: Builder[] = [
     {
       id: "A", name: "The Pragmatist", short: "Pragmatist",
       brief: "Find the smallest change that delivers the feature well in the existing codebase. Reuse what the project already has, prefer proven techniques, and cut scope hard, saying what you cut and what could come later.",
@@ -20,7 +256,7 @@ const Core = (function (Graph) {
     },
   ];
 
-  const COUNCIL = [
+  const COUNCIL: Councilor[] = [
     {
       id: "advocate", name: "The Advocate", short: "Advocate",
       lens: "Speak for the users and the product requirements. Ask whether each proposal delivers what was asked, whether people will find and use the feature, and what the experience is like. Value meeting the requirements over technical elegance.",
@@ -35,11 +271,11 @@ const Core = (function (Graph) {
     },
   ];
 
-  const CHAIR = { id: "chair", name: "The Chair", short: "Chair" };
+  const CHAIR: Cast = { id: "chair", name: "The Chair", short: "Chair" };
 
   // The final review, if a session asks for one: two reviewers check the Chair's plan before it's final, and the
   // Chair revises it to address what they find. The Chair's revision is its own step, "final".
-  const REVIEWERS = [
+  const REVIEWERS: Reviewer[] = [
     {
       id: "scaling", name: "The Scaling Reviewer", short: "Scaling", topic: "scaling",
       focus: "for how it holds up as usage grows",
@@ -52,63 +288,63 @@ const Core = (function (Graph) {
     },
   ];
   const REVIEWER_IDS = REVIEWERS.map(r => r.id);
-  const FINAL = { id: "final", name: "The Chair", short: "Chair" };
+  const FINAL: Cast = { id: "final", name: "The Chair", short: "Chair" };
 
   // The council's questions, if a session asks for them: before the vote, each councilor questions each proposal as
   // it comes in, and its builder answers and adjusts it. "ask-skeptic-B" is the Skeptic's questions on Proposal B,
   // and "amend-B" is Proposal B once it has answered them.
-  const askId = (c, L) => "ask-" + c + "-" + L;
-  const amendId = L => "amend-" + L;
-  const ASK_IDS = [];
+  const askId = (c: string, L: string) => "ask-" + c + "-" + L;
+  const amendId = (L: string) => "amend-" + L;
+  const ASK_IDS: string[] = [];
   LETTERS.forEach(L => COUNCIL.forEach(c => ASK_IDS.push(askId(c.id, L))));
   const AMEND_IDS = LETTERS.map(amendId);
 
   // What a step is about: { cast, letter } for a question or an adjustment, or just { cast }.
-  function stepOf(id) {
+  function stepOf(id: string): Step {
     let m = /^ask-(\w+)-([ABC])$/.exec(id);
-    if (m) return { cast: castOf(m[1]), letter: m[2], asker: m[1] };
+    if (m) return { cast: castOf(m[1]) as Seat, letter: m[2], asker: m[1] };
     m = /^amend-([ABC])$/.exec(id);
-    if (m) return { cast: castOf(m[1]), letter: m[1] };
-    return { cast: castOf(id), letter: null };
+    if (m) return { cast: castOf(m[1]) as Seat, letter: m[1] };
+    return { cast: castOf(id) as Seat, letter: null };
   }
 
   // Each councilor reads the proposals in a different order to reduce position bias.
-  const ORDERS = { advocate: ["A", "B", "C"], skeptic: ["B", "C", "A"], strategist: ["C", "A", "B"] };
+  const ORDERS: Record<string, string[]> = { advocate: ["A", "B", "C"], skeptic: ["B", "C", "A"], strategist: ["C", "A", "B"] };
 
   // The model tiers the Claude runtime offers. The platform decides which model serves each tier.
-  const TIERS = {
+  const TIERS: Record<string, { label: string }> = {
     quick: { label: "Fast" },
     default: { label: "Balanced" },
     complex: { label: "Frontier" },
   };
 
   // Each role runs on its own tier: cheap drafting, frontier judgment by default.
-  const ROLES = [
+  const ROLES: Role[] = [
     { id: "builders", label: "Builders", seats: ["A", "B", "C"].concat(AMEND_IDS) },
     { id: "council", label: "Council", seats: ["advocate", "skeptic", "strategist"].concat(ASK_IDS) },
     { id: "chair", label: "Chair", seats: ["chair", "final"] },
     { id: "review", label: "Review", seats: REVIEWER_IDS, optional: true },
   ];
-  const DEFAULT_MODELS = { builders: "quick", council: "complex", chair: "complex", review: "complex" };
+  const DEFAULT_MODELS: Record<string, string> = { builders: "quick", council: "complex", chair: "complex", review: "complex" };
 
-  const LENGTHS = {
+  const LENGTHS: Record<string, { label: string, words: Record<string, number> }> = {
     brief: { label: "Brief", words: { builder: 300, review: 160, plan: 650, check: 220, question: 90, amend: 400 } },
     standard: { label: "Standard", words: { builder: 450, review: 240, plan: 1000, check: 320, question: 130, amend: 600 } },
     detailed: { label: "Detailed", words: { builder: 650, review: 330, plan: 1400, check: 450, question: 180, amend: 850 } },
   };
 
-  function roleOf(seatId) {
+  function roleOf(seatId: string): string | null {
     for (let i = 0; i < ROLES.length; i++) if (ROLES[i].seats.indexOf(seatId) >= 0) return ROLES[i].id;
     return null;
   }
 
-  function normalizeModels(o) {
-    const m = {};
+  function normalizeModels(o: Record<string, string> | null | undefined): Record<string, string> {
+    const m: Record<string, string> = {};
     ROLES.forEach(r => { m[r.id] = o && TIERS[o[r.id]] ? o[r.id] : DEFAULT_MODELS[r.id]; });
     return m;
   }
 
-  function modelsSentence(m) {
+  function modelsSentence(m: Record<string, string>): string {
     return "Builders on " + TIERS[m.builders].label + ", the council on " + TIERS[m.council].label +
       " and the Chair on " + TIERS[m.chair].label + ".";
   }
@@ -121,7 +357,7 @@ const Core = (function (Graph) {
   // Where each role's agent comes from. Claude works only inside claude.ai; the others only outside it,
   // because pages published on Claude can't reach other services. Claude Code also needs Quorum's local server,
   // which runs it inside the project folder.
-  const PROVIDERS = {
+  const PROVIDERS: Record<string, ProviderInfo> = {
     claude: { label: "Claude", external: false },
     "claude-code": { label: "Claude Code", external: true, local: true, agentic: true },
     openrouter: { label: "OpenRouter", external: true, needsKey: true },
@@ -131,36 +367,36 @@ const Core = (function (Graph) {
   const PROVIDER_IDS = ["claude", "claude-code", "openrouter", "hermes", "custom"];
 
   // Claude Code takes these aliases for the latest models, or a full model name. No model means its own default.
-  const CLAUDE_CODE_MODELS = [
+  const CLAUDE_CODE_MODELS: ModelChoice[] = [
     { id: "opus", name: "Opus" },
     { id: "sonnet", name: "Sonnet" },
     { id: "haiku", name: "Haiku" },
     { id: "fable", name: "Fable" },
   ];
 
-  const OPENROUTER_PRESETS = [
+  const OPENROUTER_PRESETS: ModelChoice[] = [
     { id: "nousresearch/hermes-4-70b", name: "Nous: Hermes 4 70B" },
     { id: "nousresearch/hermes-4-405b", name: "Nous: Hermes 4 405B" },
   ];
 
-  function defaultModel(provider, role) {
+  function defaultModel(provider: string, role: string): string {
     if (provider === "claude") return DEFAULT_MODELS[role];
     if (provider === "openrouter") return role === "builders" ? "nousresearch/hermes-4-70b" : "nousresearch/hermes-4-405b";
     if (provider === "hermes") return "hermes-agent";
     return "";
   }
 
-  function usableHere(provider, inside) {
+  function usableHere(provider: string, inside: boolean): boolean {
     return !!PROVIDERS[provider] && (inside ? !PROVIDERS[provider].external : PROVIDERS[provider].external);
   }
 
   // Fill in defaults, and move any role whose provider can't run in this environment.
-  function normalizeAgents(o, inside) {
+  function normalizeAgents(o: unknown, inside: boolean): Agents {
     const fallback = inside ? "claude" : "openrouter";
-    const out = {};
+    const out: Agents = {};
     ROLES.forEach(r => {
-      const a = o && typeof o === "object" ? o[r.id] : null;
-      const asked = a && PROVIDERS[a.provider] ? a.provider : fallback;
+      const a = o && typeof o === "object" ? (o as Record<string, Partial<Agent> | null>)[r.id] : null;
+      const asked = a && a.provider && PROVIDERS[a.provider] ? a.provider : fallback;
       const provider = usableHere(asked, inside) ? asked : fallback;
       let model = a && provider === asked && typeof a.model === "string" ? a.model.trim() : "";
       if (provider === "claude" && !TIERS[model]) model = "";
@@ -170,13 +406,13 @@ const Core = (function (Graph) {
     return out;
   }
 
-  function hostOf(url) {
-    try { return new URL(url).host; } catch (_) { return ""; }
+  function hostOf(url: string | null | undefined): string {
+    try { return new URL(url as string).host; } catch (_) { return ""; }
   }
 
-  function agentLabel(agent, opts) {
+  function agentLabel(agent: Agent | null | undefined, opts?: { customUrl?: string }): string {
     if (!agent) return "";
-    const tail = m => String(m || "").split("/").pop();
+    const tail = (m: string) => String(m || "").split("/").pop() as string;
     switch (agent.provider) {
       case "claude": return "Claude " + (TIERS[agent.model] ? TIERS[agent.model].label : agent.model);
       case "claude-code": return agent.model ? tail(agent.model) + " via Claude Code" : "Claude Code";
@@ -186,7 +422,7 @@ const Core = (function (Graph) {
     }
   }
 
-  function agentsSentence(agents, opts) {
+  function agentsSentence(agents: Agents, opts?: { customUrl?: string }): string {
     return "Builders on " + agentLabel(agents.builders, opts) + ", the council on " + agentLabel(agents.council, opts) +
       " and the Chair on " + agentLabel(agents.chair, opts) + ".";
   }
@@ -194,14 +430,14 @@ const Core = (function (Graph) {
   /* ---------- OpenAI-compatible streaming ---------- */
 
   // A small Server-Sent Events parser: comments, named events and multi-line data.
-  function createSSEParser(onEvent) {
-    let buf = "", data = [], event = "";
+  function createSSEParser(onEvent: (ev: SSEEvent) => void): SSEParser {
+    let buf = "", data: string[] = [], event = "";
     function dispatch() {
       if (data.length) onEvent({ event: event || "message", data: data.join("\n") });
       data = [];
       event = "";
     }
-    function feed(chunk) {
+    function feed(chunk: string) {
       buf += chunk;
       for (;;) {
         const i = buf.search(/\r\n|\r|\n/);
@@ -230,14 +466,22 @@ const Core = (function (Graph) {
   }
 
   // Some open models write their reasoning inline between <think> tags. Keep only the answer.
-  function stripThinking(text) {
+  function stripThinking(text: string | null | undefined): string {
     let s = String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, "");
     const open = s.search(/<think>/i);
     if (open >= 0) s = s.slice(0, open);
     return s.replace(/^\s+/, "");
   }
 
-  function errorMessageFrom(body) {
+  // What stripThinking leaves out: the reasoning between <think> tags, including a block that never closed.
+  function thinkingOf(text: string | null | undefined): string {
+    const out: string[] = [], re = /<think>([\s\S]*?)(?:<\/think>|$)/gi, s = String(text || "");
+    let m;
+    while ((m = re.exec(s))) if (m[1].trim()) out.push(m[1].trim());
+    return out.join("\n\n");
+  }
+
+  function errorMessageFrom(body: string): string {
     try {
       const o = JSON.parse(body);
       const e = o && (o.error || o.detail || o.message);
@@ -249,7 +493,7 @@ const Core = (function (Graph) {
     }
   }
 
-  function httpErrorCode(status, message) {
+  function httpErrorCode(status: number, message: string): string {
     const m = String(message || "").toLowerCase();
     const modelTrouble = /model/.test(m) && /(invalid|not a valid|not valid|not found|unknown|does not exist|no endpoints|not available|unsupported)/.test(m);
     if (status === 401 || status === 403) return "auth_failed";
@@ -265,9 +509,9 @@ const Core = (function (Graph) {
     return "upstream_error";
   }
 
-  function streamErrorCode(err) {
+  function streamErrorCode(err: { code?: unknown, message?: unknown } | null | undefined): string {
     if (!err) return "upstream_error";
-    if (typeof err.code === "number") return httpErrorCode(err.code, err.message);
+    if (typeof err.code === "number") return httpErrorCode(err.code, String(err.message || ""));
     const s = (String(err.code || "") + " " + String(err.message || "")).toLowerCase();
     if (/rate|too many requests/.test(s)) return "rate_limited";
     if (/context|too long|maximum/.test(s)) return "prompt_too_large";
@@ -277,7 +521,7 @@ const Core = (function (Graph) {
 
   /* ---------- Text utilities ---------- */
 
-  function esc(s) {
+  function esc(s: unknown): string {
     return String(s)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
@@ -286,7 +530,7 @@ const Core = (function (Graph) {
       .replace(/'/g, "&#39;");
   }
 
-  function utf8Len(s) {
+  function utf8Len(s: string): number {
     let n = 0;
     for (let i = 0; i < s.length; i++) {
       const c = s.charCodeAt(i);
@@ -298,34 +542,34 @@ const Core = (function (Graph) {
     return n;
   }
 
-  function clip(s, n) {
+  function clip(s: string | null | undefined, n: number): string {
     const t = String(s || "").trim();
     return t.length > n ? t.slice(0, n).trimEnd() + "\n\n[Cut for length.]" : t;
   }
 
-  function wordCount(s) {
+  function wordCount(s: string | null | undefined): number {
     const t = String(s || "").trim();
     return t ? t.split(/\s+/).length : 0;
   }
 
-  function cleanInline(s) {
+  function cleanInline(s: string): string {
     return String(s).replace(/\*\*|__|`/g, "").replace(/^[*_\s]+|[*_\s]+$/g, "").trim();
   }
 
-  function titleOf(text) {
+  function titleOf(text: string | null | undefined): string {
     const m = /^[ \t]{0,3}#[ \t]+(.+?)[ \t#]*$/m.exec(String(text || ""));
     if (!m) return "";
     const t = cleanInline(m[1]);
     return t.length > 90 ? t.slice(0, 88).trimEnd() + "…" : t;
   }
 
-  function titlesOf(proposals) {
-    const o = {};
+  function titlesOf(proposals: Record<string, string>): Record<string, string> {
+    const o: Record<string, string> = {};
     LETTERS.forEach(L => { o[L] = titleOf(proposals[L]); });
     return o;
   }
 
-  function slug(s) {
+  function slug(s: string | null | undefined): string {
     const base = String(s || "")
       .toLowerCase()
       .normalize("NFKD")
@@ -337,11 +581,11 @@ const Core = (function (Graph) {
     return base || "plan";
   }
 
-  function ordinal(n) {
+  function ordinal(n: number): string {
     return n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : String(n);
   }
 
-  function listAnd(items) {
+  function listAnd(items: (string | null | undefined | false)[]): string {
     const a = items.filter(Boolean);
     if (a.length <= 1) return a.join("");
     if (a.length === 2) return a[0] + " and " + a[1];
@@ -349,21 +593,21 @@ const Core = (function (Graph) {
   }
 
   // "The Skeptic" reads as "the Skeptic" in the middle of a sentence.
-  function midName(name) {
+  function midName(name: string): string {
     return String(name).replace(/^The /, "the ");
   }
 
-  function namesList(names) {
+  function namesList(names: string[]): string {
     return listAnd(names.map((n, i) => (i === 0 ? n : midName(n))));
   }
 
-  function castOf(id) {
-    const all = BUILDERS.concat(COUNCIL, [CHAIR], REVIEWERS, [FINAL]);
+  function castOf(id: string): Seat | null {
+    const all: Seat[] = [...BUILDERS, ...COUNCIL, CHAIR, ...REVIEWERS, FINAL];
     for (let i = 0; i < all.length; i++) if (all[i].id === id) return all[i];
     return null;
   }
 
-  function nameOf(id) {
+  function nameOf(id: string): string {
     const c = castOf(id);
     return c ? c.name : id;
   }
@@ -377,7 +621,7 @@ const Core = (function (Graph) {
   const RE_QUOTE = /^[ \t]{0,3}>/;
   const RE_ITEM = /^([ \t]*)([-*+]|\d{1,3}[.)])[ \t]+(.*)$/;
 
-  function indentOf(line) {
+  function indentOf(line: string): number {
     let n = 0;
     for (let i = 0; i < line.length; i++) {
       const ch = line[i];
@@ -388,20 +632,20 @@ const Core = (function (Graph) {
     return n;
   }
 
-  function isTableSep(line) {
+  function isTableSep(line: string | undefined): boolean {
     return typeof line === "string" && /^[\s|:-]+$/.test(line) && line.indexOf("-") >= 0 && line.indexOf("|") >= 0;
   }
 
-  function isTableStart(line, next) {
+  function isTableStart(line: string, next: string | undefined): boolean {
     return line.indexOf("|") >= 0 && isTableSep(next);
   }
 
-  function isBlockStart(line, next) {
+  function isBlockStart(line: string, next: string | undefined): boolean {
     return RE_FENCE.test(line) || RE_HEADING.test(line) || RE_HR.test(line) || RE_QUOTE.test(line) ||
       RE_ITEM.test(line) || isTableStart(line, next);
   }
 
-  function emphasis(s) {
+  function emphasis(s: string): string {
     return s
       .replace(/\*\*\*(?=\S)([\s\S]*?\S)\*\*\*/g, "<strong><em>$1</em></strong>")
       .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<strong>$1</strong>")
@@ -411,40 +655,40 @@ const Core = (function (Graph) {
       .replace(/~~(?=\S)([\s\S]*?\S)~~/g, "<del>$1</del>");
   }
 
-  function inline(text) {
-    const slots = [];
-    const hold = html => { slots.push(html); return "\u0000" + (slots.length - 1) + "\u0000"; };
+  function inline(text: string): string {
+    const slots: string[] = [];
+    const hold = (html: string) => { slots.push(html); return "\u0000" + (slots.length - 1) + "\u0000"; };
     let s = String(text).replace(/\u0000/g, "");
-    s = s.replace(/`([^`\n]+)`/g, (_, c) => hold("<code>" + esc(c) + "</code>"));
-    s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) =>
+    s = s.replace(/`([^`\n]+)`/g, (_, c: string) => hold("<code>" + esc(c) + "</code>"));
+    s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t: string, u: string) =>
       hold('<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + emphasis(esc(t)) + "</a>"));
     s = emphasis(esc(s));
     for (let k = 0; k < 3 && s.indexOf("\u0000") >= 0; k++) {
-      s = s.replace(/\u0000(\d+)\u0000/g, (_, n) => slots[Number(n)] || "");
+      s = s.replace(/\u0000(\d+)\u0000/g, (_, n: string) => slots[Number(n)] || "");
     }
     return s;
   }
 
-  function splitRow(line) {
+  function splitRow(line: string): string[] {
     let s = line.trim().replace(/\\\|/g, "\u0001");
     if (s.charAt(0) === "|") s = s.slice(1);
     if (s.charAt(s.length - 1) === "|") s = s.slice(0, -1);
     return s.split("|").map(c => c.replace(/\u0001/g, "|").trim());
   }
 
-  function parseTable(lines, i) {
+  function parseTable(lines: string[], i: number): { html: string, next: number } {
     const head = splitRow(lines[i]);
     const aligns = splitRow(lines[i + 1]).map(c => {
       const l = c.charAt(0) === ":", r = c.charAt(c.length - 1) === ":";
       return l && r ? "c" : r ? "r" : "";
     });
     i += 2;
-    const rows = [];
+    const rows: string[][] = [];
     while (i < lines.length && lines[i].trim() && lines[i].indexOf("|") >= 0 && !RE_FENCE.test(lines[i])) {
       rows.push(splitRow(lines[i]));
       i++;
     }
-    const cls = k => (aligns[k] ? ' class="al-' + aligns[k] + '"' : "");
+    const cls = (k: number) => (aligns[k] ? ' class="al-' + aligns[k] + '"' : "");
     let html = '<div class="table-wrap"><table><thead><tr>' +
       head.map((c, k) => "<th" + cls(k) + ">" + inline(c) + "</th>").join("") + "</tr></thead>";
     if (rows.length) {
@@ -454,11 +698,11 @@ const Core = (function (Graph) {
     return { html: html + "</table></div>", next: i };
   }
 
-  function parseList(lines, i, base) {
-    const first = RE_ITEM.exec(lines[i]);
+  function parseList(lines: string[], i: number, base: number): { html: string, next: number } {
+    const first = RE_ITEM.exec(lines[i]) as RegExpExecArray;
     const ordered = /\d/.test(first[2]);
     const start = ordered ? parseInt(first[2], 10) : 1;
-    const items = [];
+    const items: { lines: string[], kids: string[] }[] = [];
     while (i < lines.length) {
       const line = lines[i];
       if (!line.trim()) {
@@ -502,8 +746,8 @@ const Core = (function (Graph) {
     return { html: "<" + tag + startAttr + ">" + body + "</" + tag + ">", next: i };
   }
 
-  function renderLines(lines) {
-    const out = [];
+  function renderLines(lines: string[]): string {
+    const out: string[] = [];
     let i = 0;
     while (i < lines.length) {
       const line = lines[i];
@@ -511,7 +755,7 @@ const Core = (function (Graph) {
       let m = RE_FENCE.exec(line);
       if (m) {
         const ch = m[1].charAt(0), len = m[1].length;
-        const buf = [];
+        const buf: string[] = [];
         i++;
         while (i < lines.length) {
           const c = RE_FENCE_CLOSE.exec(lines[i]);
@@ -531,7 +775,7 @@ const Core = (function (Graph) {
       }
       if (RE_HR.test(line)) { out.push("<hr>"); i++; continue; }
       if (RE_QUOTE.test(line)) {
-        const buf = [];
+        const buf: string[] = [];
         while (i < lines.length && lines[i].trim() &&
           (RE_QUOTE.test(lines[i]) || (buf.length && !isBlockStart(lines[i], lines[i + 1])))) {
           buf.push(lines[i].replace(/^[ \t]{0,3}>[ \t]?/, ""));
@@ -563,18 +807,18 @@ const Core = (function (Graph) {
     return out.join("\n");
   }
 
-  function renderMarkdown(src) {
+  function renderMarkdown(src: string | null | undefined): string {
     return renderLines(String(src || "").replace(/\r\n?/g, "\n").split("\n"));
   }
 
   /* ---------- Reviews and ballots ---------- */
 
   // The part of a council review meant for reading: everything before the ballot.
-  function reviewBody(text) {
+  function reviewBody(text: string | null | undefined): string {
     const t = String(text || "");
     let cut = t.length;
     const fenceRe = /^[ \t]{0,3}(`{3,}|~{3,})[^\n]*$/gm;
-    let m, open = -1;
+    let m: RegExpExecArray | null, open = -1;
     while ((m = fenceRe.exec(t))) {
       if (open < 0) {
         open = m.index;
@@ -609,7 +853,7 @@ const Core = (function (Graph) {
     return body;
   }
 
-  function tolerantJSON(s) {
+  function tolerantJSON(s: string): unknown {
     const t = String(s).trim();
     const tries = [t];
     const a = t.indexOf("{"), b = t.lastIndexOf("}");
@@ -624,7 +868,7 @@ const Core = (function (Graph) {
     return null;
   }
 
-  function letterOf(v) {
+  function letterOf(v: unknown): string | null {
     const s = String(v == null ? "" : v).trim();
     let m = /^(?:proposal\s+)?\(?([abc])\)?[.:]?$/i.exec(s);
     if (m) return m[1].toUpperCase();
@@ -632,19 +876,20 @@ const Core = (function (Graph) {
     return m ? m[1] : null;
   }
 
-  function normalizeBallot(o) {
-    if (!o || typeof o !== "object" || Array.isArray(o)) return null;
+  function normalizeBallot(v: unknown): Ballot | null {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+    const o = v as Record<string, unknown>;
     let raw = o.ranking != null ? o.ranking : o.rank != null ? o.rank : o.order;
     if (typeof raw === "string") raw = raw.split(/[\s,>]+/);
-    const ranking = [];
+    const ranking: string[] = [];
     if (Array.isArray(raw)) {
-      raw.forEach(r => {
+      raw.forEach((r: unknown) => {
         const L = letterOf(r);
         if (L && ranking.indexOf(L) < 0) ranking.push(L);
       });
     }
-    const scores = {};
-    const rawScores = o.scores && typeof o.scores === "object" ? o.scores : {};
+    const scores: Record<string, number> = {};
+    const rawScores = (o.scores && typeof o.scores === "object" ? o.scores : {}) as Record<string, unknown>;
     Object.keys(rawScores).forEach(k => {
       const L = letterOf(k);
       const n = Number(rawScores[k]);
@@ -661,17 +906,17 @@ const Core = (function (Graph) {
     return { ranking, scores };
   }
 
-  function parseBallot(s) {
+  function parseBallot(s: string): Ballot | null {
     if (!/ranking|scores/i.test(s)) return null;
     const o = tolerantJSON(s);
     return o ? normalizeBallot(o) : null;
   }
 
-  function extractBallot(text) {
+  function extractBallot(text: string | null | undefined): Ballot | null {
     const t = String(text || "");
-    const blocks = [];
+    const blocks: string[] = [];
     const re = /```[^\n]*\n([\s\S]*?)```/g;
-    let m, end = 0;
+    let m: RegExpExecArray | null, end = 0;
     while ((m = re.exec(t))) { blocks.push(m[1]); end = re.lastIndex; }
     const tail = t.slice(end);
     const open = tail.indexOf("```");
@@ -694,16 +939,16 @@ const Core = (function (Graph) {
     return null;
   }
 
-  function ballotLine(b) {
+  function ballotLine(b: Ballot): string {
     return "Ballot: " + b.ranking.map((L, k) => ordinal(k + 1) + " " + L).join(", ") +
       ". Scores out of 10: " + LETTERS.map(L => L + " " + (typeof b.scores[L] === "number" ? b.scores[L] : "not given")).join(", ") + ".";
   }
 
   /* ---------- The count ---------- */
 
-  function computeTally(ballots) {
+  function computeTally(ballots: Record<string, Ballot>): Tally {
     const ids = COUNCIL.map(c => c.id);
-    const rows = {};
+    const rows: Record<string, TallyRow> = {};
     LETTERS.forEach(L => { rows[L] = { letter: L, points: 0, firsts: 0, scoreSum: 0, ranks: {}, scores: {} }; });
     ids.forEach(id => {
       const b = ballots[id];
@@ -719,10 +964,10 @@ const Core = (function (Graph) {
       });
     });
     const list = LETTERS.map(L => rows[L]);
-    const maxOf = (arr, f) => Math.max.apply(null, arr.map(f));
+    const maxOf = (arr: TallyRow[], f: (r: TallyRow) => number) => Math.max(...arr.map(f));
     const topPoints = maxOf(list, r => r.points);
     const tiedAtPoints = list.filter(r => r.points === topPoints);
-    let pool = tiedAtPoints, decidedBy = "points", tiedAfterFirsts = [];
+    let pool = tiedAtPoints, decidedBy: Tally["decidedBy"] = "points", tiedAfterFirsts: string[] = [];
     if (pool.length > 1) {
       decidedBy = "firsts";
       const topFirsts = maxOf(pool, r => r.firsts);
@@ -749,17 +994,17 @@ const Core = (function (Graph) {
     };
   }
 
-  function orderRows(t, winner) {
+  function orderRows(t: Tally, winner: string | null): TallyRow[] {
     const rows = t.sorted.slice();
     if (winner) rows.sort((a, b) => (b.letter === winner ? 1 : 0) - (a.letter === winner ? 1 : 0));
     return rows;
   }
 
-  function dissenters(t, ballots, winner) {
-    return COUNCIL.filter(c => ballots[c.id] && ballots[c.id].ranking[2] === winner).map(c => c.id);
+  function dissenters(t: Tally, ballots: Record<string, Ballot | null>, winner: string): string[] {
+    return COUNCIL.filter(c => ballots[c.id] && (ballots[c.id] as Ballot).ranking[2] === winner).map(c => c.id);
   }
 
-  function parseDecidingVote(text, tied) {
+  function parseDecidingVote(text: string | null | undefined, tied: string[]): string {
     const t = String(text || "");
     const m = /[Dd]eciding vote (?:for|to)\s+(?:the\s+)?\**(?:[Pp]roposal\s+)?\**([ABC])\b/.exec(t);
     if (m && tied.indexOf(m[1]) >= 0) return m[1];
@@ -771,20 +1016,20 @@ const Core = (function (Graph) {
     }
     const scope = start >= 0 ? lines.slice(start, stop).join("\n") : t;
     const re = /[Pp]roposal\s+\**([ABC])\b/g;
-    let x;
+    let x: RegExpExecArray | null;
     while ((x = re.exec(scope))) if (tied.indexOf(x[1]) >= 0) return x[1];
     return tied[0];
   }
 
-  function propName(L, titles) {
+  function propName(L: string, titles: Record<string, string>): string {
     return titles[L] ? "Proposal " + L + ", \u201C" + titles[L] + "\u201D" : "Proposal " + L;
   }
 
-  function propSubject(L, titles) {
+  function propSubject(L: string, titles: Record<string, string>): string {
     return titles[L] ? propName(L, titles) + "," : propName(L, titles);
   }
 
-  function verdictText(t, titles, decided) {
+  function verdictText(t: Tally, titles: Record<string, string>, decided: string | null): string {
     if (t.decidedBy === "chair") {
       if (!decided) {
         return (t.tied.length === 3 ? "All three proposals are" : "Proposals " + listAnd(t.tied) + " are") +
@@ -792,7 +1037,7 @@ const Core = (function (Graph) {
       }
       return "The council was deadlocked, so the Chair cast the deciding vote for " + propName(decided, titles) + ".";
     }
-    const w = t.winner, r = t.rows[w];
+    const w = t.winner as string, r = t.rows[w];
     if (t.decidedBy === "points") {
       return propSubject(w, titles) + " wins with " + r.points + " of " + t.maxPoints + " possible points." +
         (t.unanimous ? " Every councilor ranked it first." : "");
@@ -803,30 +1048,30 @@ const Core = (function (Graph) {
         (others.length === 1 ? "tying with Proposal " + others[0] : "a three-way tie") + " at " + r.points + " points.";
     }
     const others = t.tiedAfterFirsts.filter(L => L !== w);
-    const next = Math.max.apply(null, others.map(L => t.rows[L].scoreSum));
+    const next = Math.max(...others.map(L => t.rows[L].scoreSum));
     return propSubject(w, titles) + " wins on combined scores, " + r.scoreSum + " to " + next + ", after " +
       (others.length === 1 ? "tying with Proposal " + others[0] : "a three-way tie") + " on points and first-place votes.";
   }
 
   /* ---------- Prompts ---------- */
 
-  function quoted(text) {
+  function quoted(text: string): string {
     return ['"""', String(text).trim(), '"""'].join("\n");
   }
 
   // Pasted context keeps its indentation; only blank edges are dropped.
-  function clipKeep(s, n) {
+  function clipKeep(s: string, n: number): string {
     const t = String(s || "").replace(/^\s*\n/, "").replace(/\s+$/, "");
     return t.length > n ? t.slice(0, n).replace(/\s+$/, "") + "\n\n[Cut for length.]" : t;
   }
 
-  function contextBlocks(context) {
+  function contextBlocks(context: ContextItem[] | null | undefined): { title: string, text: string }[] {
     return (context || [])
       .filter(c => c && String(c.text || "").trim())
       .map((c, i) => ({ title: String(c.title || "").trim() || "Context " + (i + 1), text: String(c.text) }));
   }
 
-  function contextSection(context, ctxLen, inProject) {
+  function contextSection(context: ContextItem[] | null | undefined, ctxLen: number, inProject: boolean): string {
     const blocks = contextBlocks(context);
     if (!blocks.length) {
       return "No other context was provided. " + (inProject ?
@@ -839,7 +1084,7 @@ const Core = (function (Graph) {
 
   const PURPOSE = "Quorum, a small council that decides how to implement a feature in an existing software project";
 
-  const EXPLORE = {
+  const EXPLORE: Record<string, string> = {
     builder: "You may have tools that can read the project's files. If you do, use them to check how the existing code works before you rely on it, and don't change any files or run anything that modifies the project.",
     council: "You may have tools that can read the project's files. If you do, use them to check what the proposals claim about the existing code, and don't change any files or run anything that modifies the project.",
     chair: "You may have tools that can read the project's files. If you do, use them to check details the plan depends on, and don't change any files or run anything that modifies the project.",
@@ -850,7 +1095,7 @@ const Core = (function (Graph) {
   };
 
   // For agents running inside the project's folder with tools that read and search it, such as Claude Code.
-  const IN_PROJECT = {
+  const IN_PROJECT: Record<string, string> = {
     builder: "Before you propose, explore the code this feature touches: how it works today, where the change belongs and the conventions it should follow. Then write the whole proposal as your final message.",
     council: "Check what the proposals claim about the existing code, and read the files they name. Then write your whole review, ending with the ballot, as your final message.",
     chair: "Check the details the plan depends on, such as the files and interfaces it changes. Then write the whole plan as your final message.",
@@ -862,7 +1107,7 @@ const Core = (function (Graph) {
 
   // What a seat is told about reading the project. opts.inProject: it runs inside the project's folder with tools.
   // opts.explore: it may have tools of its own.
-  function exploreNote(role, brief, opts) {
+  function exploreNote(role: string, brief: BriefText | null | undefined, opts?: PromptOptions | null): string {
     const project = brief && brief.project;
     if (opts && opts.inProject && project) {
       return "You're running inside the project's folder, " + project.path + ", with tools that can read and search its files but not change them. " + IN_PROJECT[role];
@@ -871,7 +1116,7 @@ const Core = (function (Graph) {
     return "";
   }
 
-  function inProject(brief, opts) {
+  function inProject(brief: BriefText | null | undefined, opts?: PromptOptions | null): boolean {
     return !!(opts && opts.inProject && brief && brief.project);
   }
 
@@ -880,7 +1125,7 @@ const Core = (function (Graph) {
   // What a round revises: null in the first round. After that, the requester's input on the last round's plan, the
   // inputs that started earlier rounds, and the last round's plan and proposals.
   //   { round, input, earlier: [{ round, input }], previous: { round, plan, winner, titles, proposals } }
-  function nextRevision(s, input) {
+  function nextRevision(s: SessionView, input: string): Revision {
     const r = s.revision;
     const round = r ? r.round : 1;
     return {
@@ -898,7 +1143,7 @@ const Core = (function (Graph) {
   }
 
   // The requester's input, earlier inputs and the last plan, as every seat in a revision round reads them.
-  function revisionBlocks(rev, clipLen) {
+  function revisionBlocks(rev: Revision, clipLen: number): string[] {
     const p = rev.previous;
     const out = ["The requester's input on the round " + p.round + " plan:", quoted(rev.input), ""];
     if (rev.earlier.length) {
@@ -911,10 +1156,10 @@ const Core = (function (Graph) {
   }
 
   // rev is the round's revision, if it revises an earlier plan; clipLen shortens the documents it quotes.
-  function builderPrompt(b, brief, words, ctxLen, opts, rev, clipLen) {
+  function builderPrompt(b: Builder, brief: BriefText, words: number, ctxLen?: number | null, opts?: PromptOptions | null, rev?: Revision | null, clipLen?: number | null): string {
     const n = clipLen == null ? Infinity : clipLen;
     const local = inProject(brief, opts), note = exploreNote("builder", brief, opts);
-    const revising = !rev ? [] : [
+    const revising: string[] = !rev ? [] : [
       "This is round " + rev.round + ". In round " + rev.previous.round + " the council " +
         (rev.previous.winner ? "adopted " + propName(rev.previous.winner, rev.previous.titles) : "chose a proposal") +
         ", and the Chair wrote the plan below. The requester read the plan and responded with questions and input. Revise your proposal: take in the input, answer the questions that bear on your approach, keep what still holds and change what should change. You may change course if the input calls for it. The council will review the revised proposals blind and vote again.",
@@ -974,7 +1219,7 @@ const Core = (function (Graph) {
     ]).join("\n");
   }
 
-  function councilPrompt(c, brief, proposals, words, clipLen, ctxLen, opts, rev) {
+  function councilPrompt(c: Councilor, brief: BriefText, proposals: Record<string, string>, words: number, clipLen?: number | null, ctxLen?: number | null, opts?: PromptOptions | null, rev?: Revision | null): string {
     const n = clipLen == null ? Infinity : clipLen;
     const order = ORDERS[c.id] || LETTERS;
     const docs = order.map(L =>
@@ -1029,8 +1274,8 @@ const Core = (function (Graph) {
     ]).join("\n");
   }
 
-  function chairPrompt(s, words, clipLen, ctxLen, opts) {
-    const t = s.tally;
+  function chairPrompt(s: SessionView, words: number, clipLen: number, ctxLen?: number | null, opts?: PromptOptions | null): string {
+    const t = s.tally as Tally;
     const local = inProject(s.brief, opts), note = exploreNote("chair", s.brief, opts);
     const rev = s.revision || null;
     const titles = titlesOf(s.proposals);
@@ -1043,7 +1288,7 @@ const Core = (function (Graph) {
     const count = t.sorted.map(r =>
       "- Proposal " + r.letter + (titles[r.letter] ? ', "' + titles[r.letter] + '"' : "") + ": " + r.points + " points, " +
       r.firsts + " first-place " + (r.firsts === 1 ? "vote" : "votes") + ", combined score " + r.scoreSum + " of " + t.maxScore).join("\n");
-    let outcome, dissent = "";
+    let outcome: string, dissent = "";
     if (t.decidedBy === "chair") {
       outcome = "Result: the vote is deadlocked. " +
         (t.tied.length === 3 ? "All three proposals are" : "Proposals " + listAnd(t.tied) + " are") +
@@ -1052,7 +1297,7 @@ const Core = (function (Graph) {
         ', and begin the decision section with the sentence "I cast the deciding vote for Proposal X." using its letter. Then build the plan on that proposal.';
       dissent = "\n\nIf a councilor ranked the proposal you choose last, add a final section:\n\n## Dissent\nState that objection fairly in two or three sentences, and say how the plan answers it.";
     } else {
-      const w = t.winner;
+      const w = t.winner as string;
       const how = t.decidedBy === "points" ? "won with " + t.rows[w].points + " of " + t.maxPoints + " possible points" :
         t.decidedBy === "firsts" ? "won on first-place votes after a tie on points" :
           "won on combined scores after a tie on points and first-place votes";
@@ -1100,7 +1345,7 @@ const Core = (function (Graph) {
   // The outline of the plan, for the Chair's plan and for its revision after the final review.
   //   o.rev: the round's revision, if any; o.local: the Chair can read the project; o.dissent: added after Open
   //   questions; o.review: the plan answers the final review
-  function planOutline(o) {
+  function planOutline(o: { rev?: Revision | null, local?: boolean, dissent?: string, review?: boolean }): string[] {
     return [
       "# A title for the plan",
       "One or two sentences on what will be built.",
@@ -1150,7 +1395,7 @@ const Core = (function (Graph) {
 
   /* ---------- The council's questions ---------- */
 
-  function questionPrompt(c, L, s, words, clipLen, ctxLen, opts) {
+  function questionPrompt(c: Councilor, L: string, s: SessionView, words: number, clipLen: number, ctxLen?: number | null, opts?: PromptOptions | null): string {
     const local = inProject(s.brief, opts), note = exploreNote("question", s.brief, opts);
     const rev = s.revision;
     return [
@@ -1179,8 +1424,8 @@ const Core = (function (Graph) {
   }
 
   // The questions in a councilor's answer: its list items, or the whole answer if it asks without a list.
-  function parseQuestions(text) {
-    const out = [];
+  function parseQuestions(text: string | null | undefined): string[] {
+    const out: string[] = [];
     let open = false;
     String(text || "").split("\n").forEach(line => {
       if (/^[ \t]{0,3}#{1,6}[ \t]/.test(line) || !line.trim()) { open = false; return; }
@@ -1197,7 +1442,7 @@ const Core = (function (Graph) {
     return body && /\?/.test(body) && !/^no questions\b/i.test(body) ? [body] : [];
   }
 
-  function amendPrompt(b, s, words, clipLen, ctxLen, opts) {
+  function amendPrompt(b: Builder, s: SessionView, words: number, clipLen: number, ctxLen?: number | null, opts?: PromptOptions | null): string {
     const local = inProject(s.brief, opts), note = exploreNote("amend", s.brief, opts);
     const asked = COUNCIL.map(c => {
       const q = s.asked[b.id][c.id];
@@ -1233,7 +1478,7 @@ const Core = (function (Graph) {
   }
 
   // The body of the section with this heading, up to the next heading of the same level or higher.
-  function sectionText(text, heading) {
+  function sectionText(text: string | null | undefined, heading: string): string {
     const lines = String(text || "").split("\n");
     let start = -1, level = 0;
     for (let i = 0; i < lines.length; i++) {
@@ -1250,7 +1495,7 @@ const Core = (function (Graph) {
 
   /* ---------- The final review ---------- */
 
-  function checkPrompt(r, s, words, clipLen, ctxLen, opts) {
+  function checkPrompt(r: Reviewer, s: SessionView, words: number, clipLen: number, ctxLen?: number | null, opts?: PromptOptions | null): string {
     const local = inProject(s.brief, opts), note = exploreNote("check", s.brief, opts);
     const other = REVIEWERS.filter(x => x.id !== r.id)[0];
     return [
@@ -1285,7 +1530,7 @@ const Core = (function (Graph) {
     ]).join("\n");
   }
 
-  function finalPrompt(s, words, clipLen, ctxLen, opts) {
+  function finalPrompt(s: SessionView, words: number, clipLen: number, ctxLen?: number | null, opts?: PromptOptions | null): string {
     const local = inProject(s.brief, opts), note = exploreNote("final", s.brief, opts);
     const reviews = REVIEWERS.map(r =>
       "=== Review by " + midName(r.name) + " ===\n" + clip(s.checks[r.id], clipLen) + "\n=== End of review by " + midName(r.name) + " ===").join("\n\n");
@@ -1319,8 +1564,8 @@ const Core = (function (Graph) {
   }
 
   // How many findings of each severity a final review raised, read from its Findings section.
-  function countFindings(text) {
-    const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+  function countFindings(text: string | null | undefined): Findings {
+    const counts: Findings = { critical: 0, high: 0, medium: 0, low: 0 };
     let inFindings = false;
     String(text || "").split("\n").forEach(line => {
       const h = /^[ \t]{0,3}#{1,6}[ \t]+(.*)$/.exec(line);
@@ -1329,21 +1574,21 @@ const Core = (function (Graph) {
         return;
       }
       const m = inFindings && /^\s*(?:\d{1,3}[.)]|[-*+])\s+[*_[]*\s*(?:severity\s*:\s*)?(critical|high|medium|low)\b/i.exec(line);
-      if (m) counts[m[1].toLowerCase()] += 1;
+      if (m) counts[m[1].toLowerCase() as keyof Findings] += 1;
     });
     return counts;
   }
 
-  function findingsText(c) {
+  function findingsText(c: Findings | null | undefined): string {
     if (!c) return "";
-    const parts = ["critical", "high", "medium", "low"].filter(k => c[k]).map(k => c[k] + " " + k);
+    const parts = (["critical", "high", "medium", "low"] as const).filter(k => c[k]).map(k => c[k] + " " + k);
     return parts.length ? parts.join(", ") : "No findings";
   }
 
   // Shrink the quoted proposals first, and the pasted context only if that isn't enough.
   const FIT_STEPS = [[12000, Infinity], [8000, Infinity], [6000, 12000], [5000, 8000], [4000, 5000], [3000, 3000], [1800, 2000]];
 
-  function fitPrompt(build) {
+  function fitPrompt(build: (clipLen: number, ctxLen: number) => string): string {
     let p = "";
     for (let i = 0; i < FIT_STEPS.length; i++) {
       p = build(FIT_STEPS[i][0], FIT_STEPS[i][1]);
@@ -1374,16 +1619,16 @@ const Core = (function (Graph) {
   // A session's brief says whether it has the council's questions and a final review, and the graph follows: the
   // questions go between the proposals and the reviews, and the final review after the plan.
   const HANDED_IN = ["brief", "revision"];
-  function sessionGraph(o) {
-    const settled = L => (o.questions ? amendId(L) : L);
-    const questions = [];
+  function sessionGraph(o: { questions: boolean, review: boolean }): GraphDef {
+    const settled = (L: string) => (o.questions ? amendId(L) : L);
+    const questions: NodeSpec[] = [];
     if (o.questions) {
       LETTERS.forEach(L => {
         COUNCIL.forEach(c => questions.push({ id: askId(c.id, L), kind: "question", needs: HANDED_IN.concat([L]) }));
         questions.push({ id: amendId(L), kind: "amend", needs: HANDED_IN.concat([L], COUNCIL.map(c => askId(c.id, L))) });
       });
     }
-    return Graph.define([{ id: "brief", kind: "brief" }, { id: "revision", kind: "revision" }].concat(
+    return Graph.define(([{ id: "brief", kind: "brief" }, { id: "revision", kind: "revision" }] as NodeSpec[]).concat(
       BUILDERS.map(b => ({ id: b.id, kind: "proposal", needs: HANDED_IN })),
       questions,
       COUNCIL.map(c => ({ id: c.id, kind: "review", needs: HANDED_IN.concat(LETTERS.map(settled)) })),
@@ -1395,8 +1640,8 @@ const Core = (function (Graph) {
         { id: "final", kind: "final", needs: HANDED_IN.concat(["chair"], REVIEWER_IDS) },
       ])));
   }
-  const GRAPHS = {};
-  function graphFor(brief) {
+  const GRAPHS: Record<string, GraphDef> = {};
+  function graphFor(brief: { questions?: boolean, review?: boolean } | null | undefined): GraphDef {
     const o = { questions: !!(brief && brief.questions), review: !!(brief && brief.review) };
     const key = (o.questions ? "q" : "") + (o.review ? "r" : "");
     return GRAPHS[key] || (GRAPHS[key] = sessionGraph(o));
@@ -1405,9 +1650,10 @@ const Core = (function (Graph) {
   const REVIEWED = graphFor({ review: true });
 
   // The handoffs gathered back into the shape the prompts and the written record read.
-  function sessionOf(h) {
-    const data = id => (h[id] ? h[id].data : null);
-    const proposals = {}, drafts = {}, asked = {}, amended = {}, reviews = {}, ballots = {};
+  function sessionOf(h: Readonly<Handoffs>): SessionView {
+    const data = (id: string) => (h[id] ? h[id].data : null);
+    const proposals: Record<string, string> = {}, drafts: Record<string, string> = {}, amended: Record<string, boolean> = {};
+    const asked: SessionView["asked"] = {}, reviews: Record<string, string> = {}, ballots: Record<string, Ballot> = {};
     // A proposal the council questioned is read as its builder adjusted it; drafts are as first submitted.
     LETTERS.forEach(L => {
       drafts[L] = data(L) ? data(L).text : "";
@@ -1420,7 +1666,7 @@ const Core = (function (Graph) {
       reviews[id] = data(id) ? data(id).text : "";
       ballots[id] = data(id) ? data(id).ballot : null;
     });
-    const checks = {}, findings = {};
+    const checks: Record<string, string> = {}, findings: Record<string, Findings | null> = {};
     REVIEWER_IDS.forEach(id => {
       checks[id] = data(id) ? data(id).text : "";
       findings[id] = data(id) ? data(id).findings : null;
@@ -1434,24 +1680,24 @@ const Core = (function (Graph) {
     };
   }
 
-  function wordsFor(brief) {
+  function wordsFor(brief: Brief): Record<string, number> {
     return (LENGTHS[brief.length] || LENGTHS.standard).words;
   }
 
   // How each kind of step works. An agent step builds its prompt from its task's inputs and turns the agent's answer
   // into the data it hands on, throwing { code } if the answer can't be used. A counted step works its data out itself.
-  const STEPS = {
+  const STEPS: Record<string, StepKind> = {
     proposal: {
       prompt(task, opts) {
         const s = sessionOf(task.inputs);
-        return fitPrompt((n, c) => builderPrompt(castOf(task.node), s.brief, wordsFor(s.brief).builder, c, opts, s.revision, n));
+        return fitPrompt((n, c) => builderPrompt(castOf(task.node) as Builder, s.brief, wordsFor(s.brief).builder, c, opts, s.revision, n));
       },
       result: (task, text) => ({ text, title: titleOf(text) }),
     },
     review: {
       prompt(task, opts) {
         const s = sessionOf(task.inputs);
-        return fitPrompt((n, c) => councilPrompt(castOf(task.node), s.brief, s.proposals, wordsFor(s.brief).review, n, c, opts, s.revision));
+        return fitPrompt((n, c) => councilPrompt(castOf(task.node) as Councilor, s.brief, s.proposals, wordsFor(s.brief).review, n, c, opts, s.revision));
       },
       result(task, text) {
         const ballot = extractBallot(text);
@@ -1475,28 +1721,28 @@ const Core = (function (Graph) {
     question: {
       prompt(task, opts) {
         const s = sessionOf(task.inputs), st = stepOf(task.node);
-        return fitPrompt((n, c) => questionPrompt(st.cast, st.letter, s, wordsFor(s.brief).question, n, c, opts));
+        return fitPrompt((n, c) => questionPrompt(st.cast as Councilor, st.letter as string, s, wordsFor(s.brief).question, n, c, opts));
       },
       result: (task, text) => ({ text, questions: parseQuestions(text) }),
     },
     amend: {
       // With no questions to answer, the proposal stands as submitted, and no agent is asked.
       skip(task) {
-        const L = stepOf(task.node).letter, s = sessionOf(task.inputs);
-        if (COUNCIL.some(c => s.asked[L][c.id] && s.asked[L][c.id].questions.length)) return null;
+        const L = stepOf(task.node).letter as string, s = sessionOf(task.inputs);
+        if (COUNCIL.some(c => s.asked[L][c.id] && (s.asked[L][c.id] as QuestionData).questions.length)) return null;
         const d = task.inputs[L].data;
         return { text: d.text, title: d.title, amended: false, truncated: !!d.truncated, agent: d.agent || null, served: d.served || "" };
       },
       prompt(task, opts) {
         const s = sessionOf(task.inputs), st = stepOf(task.node);
-        return fitPrompt((n, c) => amendPrompt(st.cast, s, wordsFor(s.brief).amend, n, c, opts));
+        return fitPrompt((n, c) => amendPrompt(st.cast as Builder, s, wordsFor(s.brief).amend, n, c, opts));
       },
       result: (task, text) => ({ text, title: titleOf(text), amended: true }),
     },
     check: {
       prompt(task, opts) {
         const s = sessionOf(task.inputs);
-        return fitPrompt((n, c) => checkPrompt(castOf(task.node), s, wordsFor(s.brief).check, n, c, opts));
+        return fitPrompt((n, c) => checkPrompt(castOf(task.node) as Reviewer, s, wordsFor(s.brief).check, n, c, opts));
       },
       result: (task, text) => ({ text, findings: countFindings(text) }),
     },
@@ -1511,34 +1757,114 @@ const Core = (function (Graph) {
 
   /* ---------- The written record ---------- */
 
-  function stripTitle(text) {
+  function stripTitle(text: string | null | undefined): string {
     return String(text || "").replace(/^\s*#[ \t]+[^\n]*\n?/, "").trim();
   }
 
-  function shiftHeadings(text, by) {
+  function shiftHeadings(text: string | null | undefined, by: number): string {
     let inFence = false;
     return String(text || "").split("\n").map(line => {
       if (/^[ \t]{0,3}(```|~~~)/.test(line)) { inFence = !inFence; return line; }
       if (inFence) return line;
-      return line.replace(/^([ \t]{0,3})(#{1,6})(?=[ \t])/, (_, sp, h) => sp + "#".repeat(Math.min(6, h.length + by)));
+      return line.replace(/^([ \t]{0,3})(#{1,6})(?=[ \t])/, (_, sp: string, h: string) => sp + "#".repeat(Math.min(6, h.length + by)));
     }).join("\n");
   }
 
-  function mdCell(s) {
+  function mdCell(s: string): string {
     return String(s).replace(/\|/g, "\\|").replace(/\n/g, " ");
   }
 
-  function fenceFor(text) {
+  function fenceFor(text: string): string {
     const runs = String(text).match(/`+/g) || [];
     const longest = runs.reduce((m, r) => Math.max(m, r.length), 0);
     return "`".repeat(Math.max(3, longest + 1));
   }
 
-  function recordMarkdown(s) {
-    const t = s.tally;
+  /* ---------- Conversations ---------- */
+
+  // A transcript is one attempt at one agent step: everything Quorum sent the agent and everything the agent did,
+  // from the prompt to the answer the step took.
+  //   { v, attempt, round, node, agent: { provider, model }, served, cwd, tools, started, ended,
+  //     status: running | done | error | stopped, error: { code, message } or null, truncated, usage, rebuilt, entries }
+  // Each entry is one turn of the conversation:
+  //   prompt    { text }                      what Quorum sent
+  //   thinking  { text }                      the agent's reasoning, where its provider shows it
+  //   text      { text, final, partial }      what the agent wrote: final marks its answer, partial what it had
+  //                                           written when it stopped or failed
+  //   tool      { id, name, detail, input, result, error }   a tool the agent used, and what it gave back
+  //   event     { name, data }                anything else the provider reported, such as Hermes Agent's tool progress
+  // usage is { turns, costUsd, durationMs, inputTokens, outputTokens }, any of them, where the provider reports it.
+  // A rebuilt transcript was made afterwards from the step's handoffs: its prompt rebuilt, and its answer.
+  const TRANSCRIPT_STATUS: Record<string, string> = { running: "Running", done: "Finished", error: "Couldn't finish", stopped: "Stopped" };
+
+  function fmtCount(n: number): string {
+    return Number(n).toLocaleString("en-US");
+  }
+
+  function usageText(u: Usage | null | undefined): string {
+    if (!u || typeof u !== "object") return "";
+    const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+    const parts = [];
+    if (num(u.turns)) parts.push(u.turns + (u.turns === 1 ? " turn" : " turns"));
+    if (num(u.inputTokens) || num(u.outputTokens)) {
+      parts.push([num(u.inputTokens) ? fmtCount(u.inputTokens) + " tokens in" : "", num(u.outputTokens) ? fmtCount(u.outputTokens) + " out" : ""].filter(Boolean).join(", "));
+    }
+    if (num(u.costUsd)) parts.push("$" + u.costUsd.toFixed(u.costUsd < 1 ? 4 : 2));
+    return parts.join(" · ");
+  }
+
+  // A tool call as a short line: the tool and what it was used on, such as "Read src/app.js".
+  function toolLine(e: { name?: string, detail?: string }): string {
+    return (e.name || "A tool") + (e.detail ? " " + e.detail : "");
+  }
+
+  function fenced(text: string | null | undefined, lang?: string): string {
+    const t = String(text == null ? "" : text).replace(/\s+$/, "");
+    const f = fenceFor(t);
+    return f + (lang || "") + "\n" + t + "\n" + f;
+  }
+
+  function jsonText(v: unknown): string {
+    if (typeof v === "string") return v;
+    try { return JSON.stringify(v, null, 2); } catch (_) { return String(v); }
+  }
+
+  // One step's conversation as Markdown, every attempt in order. o.title heads it, o.who names the agent's seat,
+  // such as "The Pragmatist", and o.agent(t) says what an attempt ran on.
+  function conversationMarkdown(attempts: Transcript[], o: { title: string, who: string, agent?: (t: Transcript) => string }): string {
+    const out = ["## " + o.title, ""];
+    // Each attempt gets its own heading when there's more than one, and its turns go a level below it.
+    const level = attempts.length > 1 ? 4 : 3, h = "#".repeat(level) + " ";
+    attempts.forEach((t, i) => {
+      const about = [o.agent ? o.agent(t) : "", TRANSCRIPT_STATUS[t.status] || "", usageText(t.usage)].filter(Boolean).join(" · ");
+      if (attempts.length > 1) out.push("### Attempt " + (i + 1) + " of " + attempts.length, "");
+      if (about) out.push("*" + about + "*", "");
+      if (t.error) out.push("It couldn't finish: " + (String(t.error.message || "").trim() || t.error.code), "");
+      if (t.rebuilt) out.push("*Rebuilt from the saved session: the prompt as the step makes it from what it was handed, and the answer it handed on. What the agent did in between wasn't kept.*", "");
+      (t.entries || []).forEach(e => {
+        if (e.type === "prompt") out.push(h + "What Quorum sent", "", fenced(e.text, "text"), "");
+        else if (e.type === "thinking") out.push(h + o.who + " thought", "", fenced(e.text, "text"), "");
+        else if (e.type === "text") {
+          const head = e.final ? o.who + "\u2019s answer" : e.partial ? "What " + midName(o.who) + " had written when it stopped" : o.who + " wrote";
+          out.push(h + head, "", shiftHeadings(String(e.text || "").trim(), level), "");
+        } else if (e.type === "tool") {
+          out.push(h + toolLine(e), "");
+          if (e.input != null) out.push("Input:", "", fenced(jsonText(e.input), "json"), "");
+          if (e.result == null) out.push("*Nothing came back.*", "");
+          else out.push(e.error ? "It failed:" : "What came back:", "", fenced(e.result, "text"), "");
+        } else if (e.type === "event") {
+          out.push(h + (e.name || "Event"), "", fenced(e.data, "text"), "");
+        }
+      });
+    });
+    return out.join("\n").trim() + "\n";
+  }
+
+  function recordMarkdown(s: RecordView): string {
+    const t = s.tally as Tally;
     const titles = titlesOf(s.proposals);
     const winner = t.winner || s.decided || null;
-    const out = [];
+    const out: string[] = [];
     out.push(String(s.plan || "").trim(), "", "---", "", "# How the council decided", "");
     out.push("## The feature request", "", String(s.brief.feature).trim().split("\n").map(l => "> " + l).join("\n"), "");
     if (s.setupLine) out.push(s.setupLine, "");
@@ -1564,7 +1890,7 @@ const Core = (function (Graph) {
     out.push("", verdictText(t, titles, s.decided || null), "",
       "Each councilor ranked all three proposals. A first-place ranking earns 3 points, second place 2 and third place 1.", "");
     out.push("## The proposals", "");
-    const on = id => (s.tiers && s.tiers[id] ? ", on " + s.tiers[id] : "");
+    const on = (id: string) => (s.tiers && s.tiers[id] ? ", on " + s.tiers[id] : "");
     BUILDERS.forEach(b => {
       out.push("### Proposal " + b.id + ": " + (titles[b.id] || "Untitled"), "", "*By " + midName(b.name) + on(b.id) + "*", "",
         shiftHeadings(stripTitle(s.proposals[b.id]), 2), "");
@@ -1600,12 +1926,12 @@ const Core = (function (Graph) {
   return {
     LETTERS, BUILDERS, COUNCIL, CHAIR, REVIEWERS, REVIEWER_IDS, FINAL, ASK_IDS, AMEND_IDS, askId, amendId, stepOf, ORDERS, TIERS, ROLES, DEFAULT_MODELS, LENGTHS, MAX_PROMPT_BYTES, CONTEXT_LIMIT,
     roleOf, normalizeModels, modelsSentence, PROVIDERS, PROVIDER_IDS, OPENROUTER_PRESETS, CLAUDE_CODE_MODELS, defaultModel, usableHere,
-    normalizeAgents, agentLabel, agentsSentence, hostOf, createSSEParser, stripThinking, errorMessageFrom, httpErrorCode, streamErrorCode,
+    normalizeAgents, agentLabel, agentsSentence, hostOf, createSSEParser, stripThinking, thinkingOf, errorMessageFrom, httpErrorCode, streamErrorCode,
     esc, utf8Len, clip, wordCount, titleOf, titlesOf, slug, ordinal, listAnd, midName, namesList, nameOf,
     renderMarkdown, inline, reviewBody, tolerantJSON, normalizeBallot, extractBallot, ballotLine,
     computeTally, orderRows, dissenters, parseDecidingVote, verdictText,
     contextBlocks, contextSection, exploreNote, builderPrompt, councilPrompt, chairPrompt, checkPrompt, finalPrompt, fitPrompt,
     questionPrompt, amendPrompt, parseQuestions, sectionText, countFindings, findingsText, SESSION, REVIEWED, HANDED_IN, graphFor, STEPS, sessionOf, nextRevision,
-    stripTitle, shiftHeadings, fenceFor, recordMarkdown,
+    stripTitle, shiftHeadings, fenceFor, recordMarkdown, TRANSCRIPT_STATUS, usageText, toolLine, conversationMarkdown,
   };
 })(Graph);

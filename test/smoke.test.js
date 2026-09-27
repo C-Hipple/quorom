@@ -393,6 +393,11 @@ async function convene(h, feature = "Let users export reports as CSV.") {
     assert.strictEqual(txt(doc.getElementById("verdict")), "The council was deadlocked, so the Chair cast the deciding vote for Proposal C, “Tool Commons”.");
     assert.deepStrictEqual([...doc.querySelectorAll("#division tbody tr")].map(r => r.getAttribute("data-letter")), ["C", "A", "B"]);
     assert.strictEqual(txt(doc.querySelector("#tab-C .tab-meta")), "Adopted with 6 points");
+    // after a reload, the deciding vote is read from the plan again
+    const h2 = makeHarness({ storage: { "quorum:session": win.localStorage.getItem("quorum:session") } });
+    await sleep(40);
+    assert.strictEqual(h2.win.__quorum.S.handoffs.chair.data.decided, "C");
+    assert.strictEqual(txt(h2.doc.getElementById("verdict")), "The council was deadlocked, so the Chair cast the deciding vote for Proposal C, “Tool Commons”.");
   });
 
   await run("tier substitution is noted", async () => {
@@ -518,6 +523,98 @@ async function convene(h, feature = "Let users export reports as CSV.") {
     assert.deepStrictEqual(titles, ["handlers.py", ""]);
     assert.ok(doc.querySelectorAll("#contextList .ctx-text")[0].classList.contains("is-code"));
     assert.strictEqual(txt(doc.getElementById("contextCount")), "21 of 24,000 characters");
+  });
+
+  await run("the last session comes back after a reload", async () => {
+    const h = makeHarness();
+    const { doc, win } = h;
+    await sleep(20);
+    doc.querySelector('.add-btn[data-kind="requirements"]').click();
+    const ta = doc.querySelector("#contextList .ctx-text");
+    ta.value = "- Export button on every report";
+    ta.dispatchEvent(new win.Event("input", { bubbles: true }));
+    await convene(h);
+    await waitFor(() => win.__quorum.S.phase === "done", 8000, "done");
+    await sleep(20);
+    const saved = win.localStorage.getItem("quorum:session");
+    const h2 = makeHarness({ storage: { "quorum:session": saved } });
+    await sleep(40);
+    const d2 = h2.doc, S = h2.win.__quorum.S;
+    assert.strictEqual(S.phase, "done");
+    assert.strictEqual(h2.calls.length, 0, "nothing is asked again");
+    assert.deepStrictEqual(Object.keys(S.handoffs).sort(), ["A", "B", "C", "advocate", "brief", "chair", "skeptic", "strategist", "tally"]);
+    assert.ok(Object.isFrozen(S.handoffs.advocate.data.ballot));
+    assert.ok(d2.getElementById("roster").hidden);
+    assert.strictEqual(txt(d2.getElementById("status")), "The council has adjourned. Proposal B carried, and the plan is ready.");
+    assert.strictEqual(txt(d2.getElementById("motionQuote")), "Let users export reports as CSV.");
+    assert.strictEqual(txt(d2.getElementById("motionContextSummary")), "With one piece of context: Product requirements");
+    assert.strictEqual(txt(d2.getElementById("verdict")), "Proposal B, “Lend Loop”, wins with 8 of 9 possible points.");
+    assert.strictEqual(txt(d2.querySelector("#tab-advocate .tab-title")), "Ranks B first");
+    assert.ok(d2.querySelector("#planDoc h1").textContent.includes("The Building Tool Library"));
+    assert.strictEqual(txt(d2.getElementById("propTier")), "Agent: Claude Fast");
+    assert.ok(/^Adjourned after 0:0\d$/.test(txt(d2.getElementById("clock"))), txt(d2.getElementById("clock")));
+    [...d2.querySelectorAll(".stage-btn")].forEach(b => assert.strictEqual(b.getAttribute("data-state"), "done"));
+    d2.getElementById("dlRecord").click();
+    await sleep(20);
+    assert.ok(h2.saves[0].data.includes("Agents: Builders on Claude Fast, the council on Claude Frontier and the Chair on Claude Frontier. Length: Standard."));
+    assert.ok(h2.saves[0].data.includes("| B: Lend Loop (adopted) | 1st | 2nd | 1st | 8 |"));
+  });
+
+  await run("a saved session is rebuilt only as far as it still reads, and resumes from there", async () => {
+    const h = makeHarness();
+    await convene(h);
+    await waitFor(() => h.win.__quorum.S.phase === "done", 8000, "done");
+    await sleep(20);
+    const saved = JSON.parse(h.win.localStorage.getItem("quorum:session"));
+    saved.seats.advocate.text = "## Verdict\nNo ballot here.";
+    const h2 = makeHarness({ storage: { "quorum:session": JSON.stringify(saved) } });
+    await sleep(40);
+    const { doc } = h2, S = h2.win.__quorum.S;
+    assert.strictEqual(S.phase, "stopped");
+    assert.deepStrictEqual(Object.keys(S.handoffs).sort(), ["A", "B", "C", "brief", "skeptic", "strategist"], "the plan needs the count, which needs every ballot");
+    assert.strictEqual(S.seats.advocate.status, "stopped");
+    assert.strictEqual(S.seats.chair.status, "idle");
+    assert.ok(doc.getElementById("sec-vote").hidden && doc.getElementById("sec-plan").hidden);
+    assert.strictEqual(txt(doc.getElementById("status")), "Stopped. Resume to continue where the council left off.");
+    assert.ok(!doc.getElementById("resume").hidden);
+    doc.getElementById("resume").click();
+    await waitFor(() => S.phase === "done", 8000, "done after resume");
+    assert.deepStrictEqual(h2.calls.map(c => c.id).sort(), ["advocate", "chair"]);
+    const h3 = makeHarness({ storage: { "quorum:session": "{not json" } });
+    await sleep(30);
+    assert.strictEqual(h3.win.__quorum.S.phase, "idle");
+    assert.ok(!h3.doc.getElementById("roster").hidden);
+  });
+
+  await run("text files come in as named context, and other files are skipped", async () => {
+    const h = makeHarness();
+    const { doc, win } = h;
+    await sleep(20);
+    const input = doc.getElementById("fileInput");
+    Object.defineProperty(input, "files", { configurable: true, value: [
+      new win.File(["def export(report):\r\n    return rows\r\n"], "export.py"),
+      new win.File(["# Requirements\n- Export button"], "prd.md"),
+      new win.File(["\u0089PNG\u0000\u0000"], "logo.png"),
+    ] });
+    input.dispatchEvent(new win.Event("change", { bubbles: true }));
+    await waitFor(() => !doc.getElementById("contextNote").hidden, 2000, "files read");
+    const blocks = [...doc.querySelectorAll("#contextList .ctx")];
+    assert.deepStrictEqual(blocks.map(b => b.querySelector(".ctx-title").value), ["export.py", "prd.md"]);
+    assert.strictEqual(blocks[0].querySelector(".ctx-text").value, "def export(report):\n    return rows\n");
+    assert.ok(blocks[0].querySelector(".ctx-text").classList.contains("is-code"));
+    assert.ok(!blocks[1].querySelector(".ctx-text").classList.contains("is-code"));
+    assert.strictEqual(doc.activeElement, blocks[0].querySelector(".ctx-text"));
+    assert.strictEqual(txt(doc.getElementById("contextNote")), "Skipped logo.png, because only text files up to 200 KB can be added.");
+    const drop = new win.Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: { types: ["Files"], files: [new win.File(["x".repeat(30000)], "dump.sql")] } });
+    doc.getElementById("context").dispatchEvent(drop);
+    assert.ok(drop.defaultPrevented);
+    await waitFor(() => doc.querySelectorAll("#contextList .ctx").length === 3, 2000, "dropped file added");
+    await sleep(10);
+    assert.strictEqual(txt(doc.getElementById("contextNote")), "The context is now 30,066 characters, more than the 24,000 the council can read at once. Trim it to the parts that matter before you convene.");
+    assert.ok(doc.getElementById("contextCount").classList.contains("is-over"));
+    await sleep(450);
+    assert.deepStrictEqual(JSON.parse(win.localStorage.getItem("quorum:context")).map(c => c.title), ["export.py", "prd.md", "dump.sql"]);
   });
 
   console.log(passed + " smoke tests passed" + (process.exitCode ? " (with failures)" : ""));

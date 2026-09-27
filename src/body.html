@@ -91,12 +91,12 @@
       <p class="examples">Or start from an example: <a href="#feature" role="button" class="example" data-example="0"><span class="nowrap">two-factor</span> sign-in</a>, <a href="#feature" role="button" class="example" data-example="1">CSV export for reports</a>, or <a href="#feature" role="button" class="example" data-example="2">live comment notifications</a>.</p>
       <p class="example-note" id="exampleNote" hidden>The example replaced your draft. <button type="button" class="link-btn" id="undoExample">Undo</button></p>
 
-      <div class="context" role="group" aria-labelledby="context-label" aria-describedby="contextHelp">
+      <div class="context" id="context" role="group" aria-labelledby="context-label" aria-describedby="contextHelp">
         <div class="context-head">
           <p class="field-label" id="context-label">Context</p>
           <p class="context-count" id="contextCount"></p>
         </div>
-        <p class="context-help" id="contextHelp">Paste anything the council should work from, as plain text, and give each piece a name the agents can refer to. Drafts are saved in this browser only.</p>
+        <p class="context-help" id="contextHelp">Paste anything the council should work from, as plain text, or drop text files here, and give each piece a name the agents can refer to. Drafts and your last session are kept in this browser only.</p>
         <div class="context-list" id="contextList"></div>
         <div class="context-add" role="group" aria-label="Add context">
           <button type="button" class="add-btn" data-kind="requirements"><span aria-hidden="true">+ </span>Product requirements</button>
@@ -104,6 +104,8 @@
           <button type="button" class="add-btn" data-kind="constraints"><span aria-hidden="true">+ </span>Constraints</button>
           <button type="button" class="add-btn" data-kind="code"><span aria-hidden="true">+ </span>Relevant code</button>
           <button type="button" class="add-btn" data-kind="other"><span aria-hidden="true">+ </span>Something else</button>
+          <button type="button" class="add-btn" id="addFiles"><span aria-hidden="true">+ </span>From files…</button>
+          <input type="file" id="fileInput" multiple hidden>
         </div>
         <p class="field-note" id="contextNote" hidden></p>
       </div>

@@ -219,21 +219,21 @@ t("shiftHeadings fence", () => assert.strictEqual(Core.shiftHeadings("## a\n```\
 // ---------- Agents and providers ----------
 t("agents default by environment", () => {
   deq(Core.normalizeAgents(null, true), { builders: { provider: "claude", model: "quick" }, council: { provider: "claude", model: "complex" }, chair: { provider: "claude", model: "complex" }, review: { provider: "claude", model: "complex" } });
-  deq(Core.normalizeAgents(null, false), { builders: { provider: "openrouter", model: "nousresearch/hermes-4-70b" }, council: { provider: "openrouter", model: "nousresearch/hermes-4-405b" }, chair: { provider: "openrouter", model: "nousresearch/hermes-4-405b" }, review: { provider: "openrouter", model: "nousresearch/hermes-4-405b" } });
+  deq(Core.normalizeAgents(null, false), { builders: { provider: "openrouter", model: "z-ai/glm-5.3" }, council: { provider: "openrouter", model: "z-ai/glm-5.3" }, chair: { provider: "openrouter", model: "z-ai/glm-5.3" }, review: { provider: "openrouter", model: "z-ai/glm-5.3" } }, "every seat on OpenRouter runs on GLM 5.3");
 });
 t("agents move off providers that can't run here", () => {
   const saved = { builders: { provider: "hermes", model: "alice" }, council: { provider: "claude", model: "complex" }, chair: { provider: "custom", model: " llama3.1:8b " } };
-  deq(Core.normalizeAgents(saved, false), { builders: { provider: "hermes", model: "alice" }, council: { provider: "openrouter", model: "nousresearch/hermes-4-405b" }, chair: { provider: "custom", model: "llama3.1:8b" }, review: { provider: "openrouter", model: "nousresearch/hermes-4-405b" } });
+  deq(Core.normalizeAgents(saved, false), { builders: { provider: "hermes", model: "alice" }, council: { provider: "openrouter", model: "z-ai/glm-5.3" }, chair: { provider: "custom", model: "llama3.1:8b" }, review: { provider: "openrouter", model: "z-ai/glm-5.3" } });
   deq(Core.normalizeAgents(saved, true), { builders: { provider: "claude", model: "quick" }, council: { provider: "claude", model: "complex" }, chair: { provider: "claude", model: "complex" }, review: { provider: "claude", model: "complex" } });
   deq(Core.normalizeAgents({ builders: { provider: "claude", model: "huge" } }, true).builders, { provider: "claude", model: "quick" });
-  deq(Core.normalizeAgents({ builders: { provider: "nope" } }, false).builders, { provider: "openrouter", model: "nousresearch/hermes-4-70b" });
+  deq(Core.normalizeAgents({ builders: { provider: "nope" } }, false).builders, { provider: "openrouter", model: "z-ai/glm-5.3" });
   deq(Core.normalizeAgents({ builders: { provider: "claude-code", model: "" } }, false).builders, { provider: "claude-code", model: "" });
   deq(Core.normalizeAgents({ builders: { provider: "claude-code", model: " opus " } }, false).builders, { provider: "claude-code", model: "opus" });
   deq(Core.normalizeAgents({ builders: { provider: "claude-code", model: "opus" } }, true).builders, { provider: "claude", model: "quick" });
 });
 t("agent labels", () => {
   assert.strictEqual(Core.agentLabel({ provider: "claude", model: "complex" }), "Claude Frontier");
-  assert.strictEqual(Core.agentLabel({ provider: "openrouter", model: "nousresearch/hermes-4-70b" }), "hermes-4-70b via OpenRouter");
+  assert.strictEqual(Core.agentLabel({ provider: "openrouter", model: "z-ai/glm-5.3" }), "glm-5.3 via OpenRouter");
   assert.strictEqual(Core.agentLabel({ provider: "hermes", model: "hermes-agent" }), "Hermes Agent");
   assert.strictEqual(Core.agentLabel({ provider: "hermes", model: "alice" }), "alice via Hermes Agent");
   assert.strictEqual(Core.agentLabel({ provider: "custom", model: "llama3.1:8b" }, { customUrl: "http://localhost:11434/v1" }), "llama3.1:8b via localhost:11434");
@@ -241,7 +241,7 @@ t("agent labels", () => {
   assert.strictEqual(Core.agentLabel({ provider: "claude-code", model: "" }), "Claude Code");
   assert.strictEqual(Core.agentLabel({ provider: "claude-code", model: "opus" }), "opus via Claude Code");
   assert.strictEqual(Core.agentLabel({ provider: "claude-code", model: "claude-opus-5-5" }), "claude-opus-5-5 via Claude Code");
-  assert.strictEqual(Core.agentsSentence(Core.normalizeAgents(null, false)), "Builders on hermes-4-70b via OpenRouter, the council on hermes-4-405b via OpenRouter and the Chair on hermes-4-405b via OpenRouter.");
+  assert.strictEqual(Core.agentsSentence(Core.normalizeAgents(null, false)), "Builders on glm-5.3 via OpenRouter, the council on glm-5.3 via OpenRouter and the Chair on glm-5.3 via OpenRouter.");
 });
 t("SSE parser", () => {
   const got: unknown[] = [];
@@ -317,6 +317,26 @@ t("agents inside the project folder are told to explore it and ground their work
   assert.ok(Core.exploreNote("builder", { feature: "X", context: [] }, inside).startsWith("You may have tools"));
   assert.strictEqual(Core.exploreNote("builder", b, {}), "");
 });
+// ---------- Naming the session ----------
+t("the naming prompt gives the feature, the project and what context comes with it", () => {
+  const p = Core.namePrompt({ feature: "Export reports as CSV.", context: [{ title: "Product requirements", text: "x" }, { title: "", text: "  " }, { title: "", text: "code" }], project: { path: "/p/app", name: "app" } });
+  assert.ok(p.startsWith("Name a session of Quorum, a small council that decides how to implement a feature in an existing software project, so it can be told apart"));
+  assert.ok(p.includes('The feature request:\n"""\nExport reports as CSV.\n"""\n\nThe project: app\n\nThe context it comes with: Product requirements and Context 2.'));
+  assert.ok(p.includes("about ten words"));
+  assert.ok(p.trim().endsWith("Answer with the name alone, on one line, without quotes, Markdown or a full stop. Don't use any tools."));
+  assert.ok(!Core.namePrompt({ feature: "X", context: [] }).includes("The project:"));
+});
+t("a session's name is the answer's first line, tidied", () => {
+  assert.strictEqual(Core.sessionName("CSV Export for Every Report, Streamed or Emailed When Large"), "CSV Export for Every Report, Streamed or Emailed When Large");
+  assert.strictEqual(Core.sessionName("\u201CCSV export for reports.\u201D"), "CSV export for reports");
+  assert.strictEqual(Core.sessionName("# Session name: **CSV export** for reports\n\nIt names the feature."), "CSV export for reports");
+  assert.strictEqual(Core.sessionName("<think>Keep it short.</think>\n\nTitle: Two-factor sign-in with backup codes"), "Two-factor sign-in with backup codes");
+  assert.strictEqual(Core.sessionName("one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen"),
+    "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen", "a rambling answer is cut to sixteen words");
+  assert.strictEqual(Core.sessionName("   \n  "), "");
+  assert.strictEqual(Core.sessionName(null), "");
+});
+
 // ---------- The session graph ----------
 const G = Core.SESSION;
 const H = (id: string, kind: string, data: unknown) => Graph.handoff(id, kind, data);

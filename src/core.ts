@@ -30,7 +30,9 @@ export interface Role {
 export interface ProviderInfo {
   label: string;
   external: boolean;
+  // Runs as an agent on Quorum's local server, inside the project folder.
   local?: boolean;
+  // Has tools of its own, and may be able to read the project.
   agentic?: boolean;
   needsKey?: boolean;
   defaultUrl?: string;
@@ -355,14 +357,15 @@ export const Core = (function (Graph) {
   /* ---------- Agent providers ---------- */
 
   // Where each role's agent comes from. Claude works only inside claude.ai; the others only outside it,
-  // because pages published on Claude can't reach other services. Claude Code also needs Quorum's local server,
-  // which runs it inside the project folder.
+  // because pages published on Claude can't reach other services. Claude Code, OpenRouter and other endpoints run as
+  // agents on Quorum's local server, inside the project folder: Claude Code on its own harness, and the others on
+  // Quorum's agent loop. Hermes Agent is an agent of its own, which the page asks directly.
   const PROVIDERS: Record<string, ProviderInfo> = {
     claude: { label: "Claude", external: false },
     "claude-code": { label: "Claude Code", external: true, local: true, agentic: true },
-    openrouter: { label: "OpenRouter", external: true, needsKey: true },
+    openrouter: { label: "OpenRouter", external: true, local: true, agentic: true, needsKey: true },
     hermes: { label: "Hermes Agent", external: true, needsKey: true, agentic: true, defaultUrl: "http://127.0.0.1:8642/v1" },
-    custom: { label: "Other endpoint", external: true },
+    custom: { label: "Other endpoint", external: true, local: true, agentic: true },
   };
   const PROVIDER_IDS = ["claude", "claude-code", "openrouter", "hermes", "custom"];
 
@@ -374,14 +377,15 @@ export const Core = (function (Graph) {
     { id: "fable", name: "Fable" },
   ];
 
+  // On OpenRouter, every seat is an agent, so its model has to be able to call tools.
+  const OPENROUTER_MODEL = "z-ai/glm-5.3";
   const OPENROUTER_PRESETS: ModelChoice[] = [
-    { id: "nousresearch/hermes-4-70b", name: "Nous: Hermes 4 70B" },
-    { id: "nousresearch/hermes-4-405b", name: "Nous: Hermes 4 405B" },
+    { id: OPENROUTER_MODEL, name: "Z.ai: GLM 5.3" },
   ];
 
   function defaultModel(provider: string, role: string): string {
     if (provider === "claude") return DEFAULT_MODELS[role];
-    if (provider === "openrouter") return role === "builders" ? "nousresearch/hermes-4-70b" : "nousresearch/hermes-4-405b";
+    if (provider === "openrouter") return OPENROUTER_MODEL;
     if (provider === "hermes") return "hermes-agent";
     return "";
   }
@@ -1393,6 +1397,35 @@ export const Core = (function (Graph) {
     ]);
   }
 
+  /* ---------- Naming the session ---------- */
+
+  // As the council convenes, the Chair's agent names the session, so it can be told apart from others in a list.
+  function namePrompt(brief: BriefText): string {
+    const titles = contextBlocks(brief.context).map(c => c.title);
+    return [
+      "Name a session of " + PURPOSE + ", so it can be told apart from other sessions in a list.",
+      "",
+      "The feature request:",
+      quoted(brief.feature),
+      "",
+    ].concat(brief.project ? ["The project: " + brief.project.name, ""] : [], titles.length ? ["The context it comes with: " + listAnd(titles) + ".", ""] : [], [
+      "Write a name of about ten words that says what the feature is and what it's for, specific enough to identify this session among others for the same project. Write it in the same language as the feature request.",
+      "",
+      "Answer with the name alone, on one line, without quotes, Markdown or a full stop. Don't use any tools.",
+    ]).join("\n");
+  }
+
+  // The name in an answer to namePrompt: its first line, tidied, and cut short if the agent rambled. "" if it has none.
+  function sessionName(text: string | null | undefined): string {
+    const line = stripThinking(text).split("\n").map(l => l.trim()).filter(Boolean)[0] || "";
+    const words = cleanInline(line.replace(/^#{1,6}[ \t]+/, "").replace(/^(session )?(name|title)\s*:\s*/i, ""))
+      .replace(/^["'\u201C\u2018]+|["'\u201D\u2019]+$/g, "")
+      .replace(/[.\u3002]+$/, "")
+      .split(/\s+/).filter(Boolean);
+    const name = words.slice(0, 16).join(" ");
+    return name.length > 140 ? name.slice(0, 139).trimEnd() + "\u2026" : name;
+  }
+
   /* ---------- The council's questions ---------- */
 
   function questionPrompt(c: Councilor, L: string, s: SessionView, words: number, clipLen: number, ctxLen?: number | null, opts?: PromptOptions | null): string {
@@ -1931,7 +1964,7 @@ export const Core = (function (Graph) {
     renderMarkdown, inline, reviewBody, tolerantJSON, normalizeBallot, extractBallot, ballotLine,
     computeTally, orderRows, dissenters, parseDecidingVote, verdictText,
     contextBlocks, contextSection, exploreNote, builderPrompt, councilPrompt, chairPrompt, checkPrompt, finalPrompt, fitPrompt,
-    questionPrompt, amendPrompt, parseQuestions, sectionText, countFindings, findingsText, SESSION, REVIEWED, HANDED_IN, graphFor, STEPS, sessionOf, nextRevision,
+    namePrompt, sessionName, questionPrompt, amendPrompt, parseQuestions, sectionText, countFindings, findingsText, SESSION, REVIEWED, HANDED_IN, graphFor, STEPS, sessionOf, nextRevision,
     stripTitle, shiftHeadings, fenceFor, recordMarkdown, TRANSCRIPT_STATUS, usageText, toolLine, conversationMarkdown,
   };
 })(Graph);

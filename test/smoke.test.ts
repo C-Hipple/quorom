@@ -17,6 +17,7 @@ const CHECKS: Record<string, string> = {
   scaling: checkText("Fine for one building, not for ten.", "1. **High**: the shared sheet becomes a bottleneck. Move it online.\n2. **Medium**: no cap on loans per person."),
   security: checkText("Ready.", "No findings."),
 };
+const NAME = "A Shared Tool Library Where Neighbors Borrow Tools With a Sign-out Sheet";
 const finalText = "# The Building Tool Library, Reviewed\nA shared library for the building.\n\n## The decision\nB.\n\n## Final review\n- **High**, the sheet: moved online.\n\n## Open questions\n- None.";
 const chairText = (deciding?: string) => `# The Building Tool Library\nA shared library for the building.\n\n## The decision\n${deciding ? "I cast the deciding vote for Proposal " + deciding + ". " : ""}The council chose well.\n\n## Scope\nIn and out.\n\n## How it works\nPieces.\n\n## Milestones\n1. One — a week\n2. Two — a week\n\n## Risks and mitigations\n- Risk: handled\n\n## Open questions\n- Who keeps the keys?`;
 
@@ -28,6 +29,8 @@ interface HarnessOptions {
   questions?: boolean;
   storage?: Record<string, string>;
   tierApplied?: string;
+  // Naming the session fails.
+  failName?: boolean;
   delay?: number;
   thinkDelay?: number;
 }
@@ -58,6 +61,7 @@ function makeHarness(opts: HarnessOptions = {}): { dom: JSDOM, win: any, doc: an
     if (prompt.startsWith("You are The Security Reviewer")) return "security";
     if (/^You are the Chair[^\n]*finishing the plan after its final review/.test(prompt)) return "final";
     if (prompt.startsWith("You are the Chair")) return "chair";
+    if (prompt.startsWith("Name a session of Quorum")) return "name";
     return "?";
   }
   const ballots = opts.ballots || {
@@ -70,6 +74,7 @@ function makeHarness(opts: HarnessOptions = {}): { dom: JSDOM, win: any, doc: an
     if (id === "chair") return chairText(opts.deciding);
     if (CHECKS[id]) return CHECKS[id];
     if (id === "final") return finalText;
+    if (id === "name") return NAME;
     const [r, s] = ballots[id];
     const noBallot = plan[id] === "no_ballot" && n === 1;
     return councilText(r, s, !noBallot);
@@ -84,6 +89,7 @@ function makeHarness(opts: HarnessOptions = {}): { dom: JSDOM, win: any, doc: an
       const full = textFor(id, n);
       const failure = plan[id] && n === 1 && plan[id] !== "no_ballot" ? plan[id] : null;
       if (plan.all === "not_granted") return setTimeout(() => reject({ code: "not_granted", message: "declined" }), 5);
+      if (id === "name" && opts.failName) return setTimeout(() => reject({ code: "upstream_error", message: "fail" }), 5);
       const chunks = full.match(/[\s\S]{1,40}/g) as string[];
       let i = 0, text = "", done = false;
       const onAbort = () => { if (done) return; done = true; reject({ code: "cancelled", message: "aborted", text }); };
@@ -192,9 +198,20 @@ test("full session happy path", async () => {
   await waitFor(() => win.__quorum.S.phase === "done", 8000, "done");
   await sleep(60);
   const S = win.__quorum.S;
-  assert.strictEqual(h.calls.length, 7);
+  assert.strictEqual(h.calls.length, 8);
   assert.ok(h.calls.every(c => c.cache === false));
-  assert.deepStrictEqual(h.calls.map(c => c.id + ":" + c.tier).sort(), ["A:quick", "B:quick", "C:quick", "advocate:complex", "chair:complex", "skeptic:complex", "strategist:complex"]);
+  assert.deepStrictEqual(h.calls.map(c => c.id + ":" + c.tier).sort(), ["A:quick", "B:quick", "C:quick", "advocate:complex", "chair:complex", "name:complex", "skeptic:complex", "strategist:complex"], "the Chair's agent names the session");
+  // The session is named as it starts, and the name heads it.
+  const naming = h.calls.find(c => c.id === "name")!.prompt;
+  assert.ok(naming.includes('The feature request:\n"""\nLet users export reports as CSV.\n"""'));
+  assert.ok(naming.includes("The context it comes with: Product requirements and Relevant code."));
+  assert.ok(naming.includes("Write a name of about ten words"));
+  assert.strictEqual(S.name, NAME);
+  assert.ok(!doc.getElementById("sessionName").hidden);
+  assert.strictEqual(txt(doc.getElementById("sessionName")), NAME);
+  assert.strictEqual(doc.title, NAME + " \u00B7 Quorum");
+  // Claude inside claude.ai doesn't say what it used, so the rail names the models without counts.
+  assert.deepStrictEqual([...doc.querySelectorAll("#railUsageList li")].map(txt), ["Claude Fast Not reported", "Claude Frontier Not reported", "Total Not reported"]);
   assert.strictEqual(txt(doc.getElementById("propTier")), "Agent: Claude Fast");
   assert.strictEqual(txt(doc.getElementById("planTier")), "Agent: Claude Frontier");
   assert.ok(doc.getElementById("tierNote").hidden);
@@ -282,6 +299,19 @@ test("full session happy path", async () => {
   assert.ok(!html.includes('style="'));
 });
 
+test("a session goes on without a name if its naming fails", async () => {
+  const h = makeHarness({ failName: true });
+  const { doc, win } = h;
+  await convene(h);
+  await waitFor(() => win.__quorum.S.phase === "done", 8000, "done");
+  await sleep(30);
+  assert.strictEqual(h.calls.filter(c => c.id === "name").length, 1);
+  assert.strictEqual(win.__quorum.S.name, "");
+  assert.ok(doc.getElementById("sessionName").hidden);
+  assert.strictEqual(doc.title, "Quorum");
+  assert.ok(doc.getElementById("notice").hidden, "nothing to retry");
+});
+
 test("streaming shows caret and live status", async () => {
   const h = makeHarness({ delay: 120 });
   const { doc, win } = h;
@@ -353,7 +383,7 @@ test("upstream error pauses and retry continues", async () => {
   await waitFor(() => S.phase === "done", 8000, "done after retry");
   assert.strictEqual(h.calls.filter(c => c.id === "advocate").length, advCalls, "finished councilors are not asked again");
   assert.strictEqual(h.calls.filter(c => c.id === "skeptic").length, 2);
-  assert.strictEqual(h.calls.length, 8);
+  assert.strictEqual(h.calls.length, 9, "seven steps, the retry and the name, which isn't asked for again");
 });
 
 test("steps hand on frozen copies, and a retry builds on them", async () => {
@@ -478,7 +508,7 @@ test("questions and input on the plan go back to the builders, and the council v
   doc.getElementById("reviseBtn").click();
   await sleep(20);
   assert.strictEqual(txt(doc.getElementById("reviseNote")), "Write your questions or input first.");
-  assert.strictEqual(h.calls.length, 7);
+  assert.strictEqual(h.calls.length, 8);
   doc.getElementById("reviseInput").value = "Why a shared shelf?\nWe also need a waitlist.";
   doc.getElementById("reviseBtn").click();
   await sleep(15);
@@ -491,8 +521,9 @@ test("questions and input on the plan go back to the builders, and the council v
   assert.ok(/^Round 2 · In session/.test(txt(doc.getElementById("clock"))));
   await waitFor(() => S.phase === "done", 8000, "round 2 done");
   await sleep(30);
-  const again = h.calls.slice(7);
-  assert.deepStrictEqual(again.map(c => c.id).sort(), ["A", "B", "C", "advocate", "chair", "skeptic", "strategist"], "every seat works again");
+  const again = h.calls.slice(8);
+  assert.deepStrictEqual(again.map(c => c.id).sort(), ["A", "B", "C", "advocate", "chair", "skeptic", "strategist"], "every seat works again, and the name stays");
+  assert.strictEqual(txt(doc.getElementById("sessionName")), NAME);
   const a2 = again.find(c => c.id === "A")!.prompt;
   assert.ok(a2.includes("This is round 2. In round 1 the council adopted Proposal B, \u201CLend Loop\u201D"));
   assert.ok(a2.includes("Why a shared shelf?\nWe also need a waitlist."));
@@ -563,7 +594,7 @@ test("a final review, if asked for, checks the plan for scaling and security, an
   assert.ok(doc.getElementById("planActions").hidden, "it can't be copied until it's final");
   await waitFor(() => S.phase === "done", 8000, "done");
   await sleep(40);
-  assert.deepStrictEqual(h.calls.map(c => c.id + ":" + c.tier).sort(), ["A:quick", "B:quick", "C:quick", "advocate:complex", "chair:complex", "final:complex", "scaling:default", "security:default", "skeptic:complex", "strategist:complex"]);
+  assert.deepStrictEqual(h.calls.map(c => c.id + ":" + c.tier).sort(), ["A:quick", "B:quick", "C:quick", "advocate:complex", "chair:complex", "final:complex", "name:complex", "scaling:default", "security:default", "skeptic:complex", "strategist:complex"]);
   const scaling = h.calls.find(c => c.id === "scaling")!.prompt;
   assert.ok(scaling.includes("=== The Chair's plan ===\n# The Building Tool Library\nA shared library"));
   const fin = h.calls.find(c => c.id === "final")!.prompt;
@@ -602,7 +633,7 @@ test("a final review, if asked for, checks the plan for scaling and security, an
   doc.getElementById("reviseInput").value = "What about lost tools?";
   doc.getElementById("reviseBtn").click();
   await waitFor(() => S.round === 2 && S.phase === "done", 8000, "round 2");
-  assert.strictEqual(h.calls.length, 20);
+  assert.strictEqual(h.calls.length, 21, "ten steps in each round, and the name once");
   assert.ok(h.calls.slice(10).find(c => c.id === "A")!.prompt.includes("=== Plan from round 1 ===\n# The Building Tool Library, Reviewed"), "the next round revises the reviewed plan");
 });
 
@@ -635,7 +666,7 @@ test("each role runs on the model chosen for it", async () => {
   assert.ok(doc.getElementById("tier-chair").disabled && doc.getElementById("provider-chair").disabled, "agent choices are locked while the council sits");
   await waitFor(() => win.__quorum.S.phase === "done", 8000, "done");
   await sleep(20);
-  assert.deepStrictEqual(h.calls.map(c => c.id + ":" + c.tier).sort(), ["A:default", "B:default", "C:default", "advocate:quick", "chair:complex", "skeptic:quick", "strategist:quick"]);
+  assert.deepStrictEqual(h.calls.map(c => c.id + ":" + c.tier).sort(), ["A:default", "B:default", "C:default", "advocate:quick", "chair:complex", "name:complex", "skeptic:quick", "strategist:quick"]);
   assert.ok(h.calls.find(c => c.id === "A")!.prompt.includes("about 300 words"));
   assert.ok(h.calls.find(c => c.id === "chair")!.prompt.includes("about 650 words"));
   assert.ok(!doc.getElementById("tier-chair").disabled);
@@ -803,7 +834,7 @@ test("every agent's conversation can be read, from the prompt Quorum sent to the
   assert.strictEqual(file.filename, "council-conversations-the-building-tool-library.md");
   assert.ok(file.data.startsWith("# Every agent\u2019s conversation\n\n> Let users export reports as CSV.\n\n"), file.data.slice(0, 120));
   ["Proposal A \u00B7 The Pragmatist", "Review \u00B7 The Skeptic", "Plan \u00B7 The Chair"].forEach(t => assert.ok(file.data.includes("\n## " + t + "\n"), t));
-  h.calls.forEach(c => assert.ok(file.data.includes(c.prompt), c.id + "'s prompt"));
+  h.calls.filter(c => c.id !== "name").forEach(c => assert.ok(file.data.includes(c.prompt), c.id + "'s prompt"));
   assert.ok(file.data.includes("### The Chair\u2019s answer\n\n#### The Building Tool Library"), "its headings go below the step's");
   turns = doc.querySelectorAll("#convoBody > *");
   assert.strictEqual(turns.length, 2, "nothing drawn twice");
@@ -826,6 +857,7 @@ test("the last session comes back after a reload", async () => {
   const d2 = h2.doc, S = h2.win.__quorum.S;
   assert.strictEqual(S.phase, "done");
   assert.strictEqual(h2.calls.length, 0, "nothing is asked again");
+  assert.strictEqual(txt(d2.getElementById("sessionName")), NAME, "the name comes back too");
   assert.deepStrictEqual(Object.keys(S.handoffs).sort(), ["A", "B", "C", "advocate", "brief", "chair", "revision", "skeptic", "strategist", "tally"]);
   assert.ok(Object.isFrozen(S.handoffs.advocate.data.ballot));
   assert.ok(d2.getElementById("roster").hidden);

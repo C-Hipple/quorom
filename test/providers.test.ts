@@ -1,5 +1,6 @@
-// In-page tests for running Quorum on its own, with OpenRouter, Hermes Agent and other endpoints. QUORUM_HTML names
-// another build of the page to test instead of dist/quorum.html.
+// In-page tests for running Quorum on its own, without Quorum's local server: Hermes Agent, which the page asks
+// directly, and the providers whose agents need the server. QUORUM_HTML names another build of the page to test instead
+// of dist/quorum.html. Agents on the server are tested in local.test.ts.
 import { test } from "bun:test";
 import { JSDOM } from "jsdom";
 import assert from "node:assert";
@@ -19,9 +20,11 @@ const chairText = "# The Plan\nSummary.\n\n## The decision\nB won.\n\n## Require
 function who(prompt: string): string {
   const m = /^You are (The \w+|the Chair)/.exec(prompt);
   const name = m ? m[1] : "";
+  if (prompt.startsWith("Name a session of Quorum")) return "name";
   return ({ "The Pragmatist": "A", "The Visionary": "B", "The Architect": "C", "The Advocate": "advocate", "The Skeptic": "skeptic", "The Strategist": "strategist", "the Chair": "chair" } as Record<string, string>)[name] || "?";
 }
 function textFor(id: string): string {
+  if (id === "name") return "Shared Tool Library for Neighbors, With Bins and a Sign-out Sheet";
   if (["A", "B", "C"].includes(id)) return builderText(id);
   if (id === "chair") return chairText;
   return councilText(id);
@@ -146,106 +149,153 @@ async function convene(h: Harness, feature = "Let users export reports as CSV.")
 }
 const chats = (h: Harness) => h.requests.filter(r => r.method === "POST");
 
-test("on its own, Quorum defaults to OpenRouter and asks for a key", async () => {
+const ROLE_IDS = ["builders", "council", "chair"];
+// Puts every role on Hermes Agent, with its key.
+function onHermes(h: Harness) {
+  ROLE_IDS.forEach(r => type(h, "provider-" + r, "hermes", "change"));
+  type(h, "key-hermes", "local-secret");
+}
+
+test("on its own, Quorum defaults to OpenRouter, whose agents need Quorum's server", async () => {
   const h = makeHarness();
   const { doc } = h;
   await sleep(40);
-  assert.deepStrictEqual(["builders", "council", "chair"].map(r => doc.getElementById("provider-" + r).value + " " + doc.getElementById("model-" + r).value),
-    ["openrouter nousresearch/hermes-4-70b", "openrouter nousresearch/hermes-4-405b", "openrouter nousresearch/hermes-4-405b"]);
+  assert.deepStrictEqual(ROLE_IDS.map(r => doc.getElementById("provider-" + r).value + " " + doc.getElementById("model-" + r).value),
+    ["openrouter z-ai/glm-5.3", "openrouter z-ai/glm-5.3", "openrouter z-ai/glm-5.3"]);
   assert.ok(doc.getElementById("tier-builders").hidden);
   assert.strictEqual(doc.getElementById("model-builders").getAttribute("list"), "models-openrouter");
-  const claudeOpt = doc.querySelector('#provider-builders option[value="claude"]');
-  assert.ok(claudeOpt.disabled);
-  assert.strictEqual(claudeOpt.textContent, "Claude (inside claude.ai only)");
-  const codeOpt = doc.querySelector('#provider-builders option[value="claude-code"]');
-  assert.ok(codeOpt.disabled, "Claude Code needs Quorum's local server");
-  assert.strictEqual(codeOpt.textContent, "Claude Code (needs bun start)");
+  const option = (p: string) => doc.querySelector('#provider-builders option[value="' + p + '"]');
+  assert.ok(option("claude").disabled);
+  assert.strictEqual(option("claude").textContent, "Claude (inside claude.ai only)");
+  ["claude-code", "openrouter", "custom"].forEach(p => assert.ok(option(p).disabled, p + " needs Quorum's local server"));
+  assert.deepStrictEqual(["claude-code", "openrouter", "custom"].map(p => option(p).textContent),
+    ["Claude Code (needs bun start)", "OpenRouter (needs bun start)", "Other endpoint (needs bun start)"]);
+  assert.ok(!option("hermes").disabled, "Hermes Agent is asked directly");
   assert.ok(doc.getElementById("project").hidden, "no project folder without the local server");
   assert.ok(doc.getElementById("providers").open, "providers panel opens until something is set up");
   assert.strictEqual(txt(doc.getElementById("providersStatus")), "OpenRouter needs setting up");
   assert.ok(txt(doc.getElementById("help-hermes")).includes("API_SERVER_CORS_ORIGINS=https://example.org"));
-  const ids = [...doc.querySelectorAll("#models-openrouter option")].map(o => o.value);
-  assert.ok(ids.includes("anthropic/claude-opus-5.5") && ids[0] === "nousresearch/hermes-4-70b", "live model list merged after the presets: " + ids.join(","));
+  const ids = [...doc.querySelectorAll("#models-openrouter option")].map((o: any) => o.value);
+  assert.ok(ids.includes("anthropic/claude-opus-5.5") && ids[0] === "z-ai/glm-5.3", "live model list merged after the presets: " + ids.join(","));
+  // The agents are summed up beside Convene, and set in Settings, at the foot of the rail.
+  assert.strictEqual(txt(doc.getElementById("agentsSummary")), "Builders on glm-5.3 via OpenRouter, the council on glm-5.3 via OpenRouter and the Chair on glm-5.3 via OpenRouter.");
+  assert.ok(doc.getElementById("settingsDrawer").hidden);
+  assert.ok(!doc.getElementById("settingsBadge").hidden, "Settings says a provider needs setting up");
+  assert.ok(doc.getElementById("openHistory").hidden, "no History without Quorum's server");
+  doc.getElementById("changeAgents").click();
+  await sleep(10);
+  assert.ok(!doc.getElementById("settingsDrawer").hidden);
+  assert.strictEqual(doc.activeElement.id, "settingsTitle");
+  type(h, "key-openrouter", "sk-or-test");
+  assert.ok(doc.getElementById("settingsBadge").hidden, "set up now");
+  doc.querySelector("#settingsDrawer .drawer-scrim").click();
+  assert.ok(doc.getElementById("settingsDrawer").hidden, "the scrim closes it");
+  assert.strictEqual(doc.activeElement.id, "changeAgents");
   await convene(h);
   await sleep(20);
   assert.strictEqual(chats(h).length, 0);
-  assert.strictEqual(txt(doc.getElementById("agentsNote")), "Add your OpenRouter API key under Providers.");
-  assert.strictEqual(doc.activeElement.id, "key-openrouter");
+  assert.strictEqual(txt(doc.getElementById("agentsNote")), "OpenRouter runs through Quorum's local server. Start it with bun start and open Quorum at the address it prints, or choose another provider for the builders.");
+  assert.ok(!doc.getElementById("settingsDrawer").hidden, "Settings opens on what needs changing");
+  assert.strictEqual(doc.activeElement.id, "provider-builders");
+  assert.strictEqual(txt(doc.getElementById("settingsNote")), txt(doc.getElementById("agentsNote")));
+  doc.querySelector("#settingsDrawer [data-close]").click();
+  type(h, "provider-builders", "custom", "change");
+  await convene(h);
+  await sleep(20);
+  assert.strictEqual(txt(doc.getElementById("agentsNote")), "Your endpoint runs through Quorum's local server. Start it with bun start and open Quorum at the address it prints, or choose another provider for the builders.");
 });
 
-test("a full session runs on OpenRouter", async () => {
+test("the whole council can run on Hermes Agent with its tools", async () => {
+  const h = makeHarness({ behavior: req => (/8642/.test(req.url) && req.method === "POST" ? { sse: { tool: true, delay: 5 } } : null) });
+  const { doc, win } = h;
+  await sleep(20);
+  ROLE_IDS.forEach(r => type(h, "provider-" + r, "hermes", "change"));
+  assert.strictEqual(doc.getElementById("model-builders").value, "hermes-agent");
+  assert.strictEqual(doc.getElementById("model-builders").getAttribute("list"), "models-hermes");
+  await convene(h);
+  await sleep(20);
+  assert.strictEqual(txt(doc.getElementById("agentsNote")), "Add the Hermes Agent API key under Providers.");
+  type(h, "key-hermes", "local-secret");
+  doc.getElementById("check-hermes").click();
+  await sleep(20);
+  assert.strictEqual(txt(doc.getElementById("status-hermes")), "Connected. It offers “hermes-agent”.");
+  await convene(h);
+  await waitFor(() => win.__quorum.S.phase === "done", 10000, "done");
+  const all = chats(h), posts = all.filter(r => who(r.body.messages[0].content) !== "name");
+  assert.strictEqual(all.length, 8, "seven steps, and the Chair's agent naming the session");
+  assert.strictEqual(txt(doc.getElementById("sessionName")), "Shared Tool Library for Neighbors, With Bins and a Sign-out Sheet");
+  posts.forEach(r => {
+    assert.strictEqual(r.url, "http://127.0.0.1:8642/v1/chat/completions");
+    assert.strictEqual(r.headers.Authorization, "Bearer local-secret");
+    assert.strictEqual(r.body.model, "hermes-agent");
+    assert.strictEqual(r.body.stream, true);
+    assert.ok(r.body.messages[0].content.includes("You may have tools that can read the project's files."));
+  });
+  assert.strictEqual(txt(doc.getElementById("propTier")), "Agent: Hermes Agent");
+  assert.strictEqual(txt(doc.getElementById("verdict")), "Proposal B, “Lend Loop”, wins with 8 of 9 possible points.");
+  assert.ok(!doc.getElementById("dlRecord").hidden, "plain downloads work outside Claude");
+  doc.getElementById("dlRecord").click();
+  await sleep(20);
+  assert.deepStrictEqual(h.downloads, ["council-record-the-plan.md"]);
+  assert.strictEqual(win.localStorage.getItem("quorum:key:hermes"), null, "keys aren't stored unless Remember is on");
+  doc.getElementById("propConvo").click();
+  await sleep(30);
+  const event = doc.querySelector("#convoBody details.is-tool");
+  assert.strictEqual(txt(event.querySelector("summary")), "hermes.tool.progress", "what Hermes Agent reported while it worked");
+  assert.strictEqual(event.querySelector("pre").textContent, '{"tool":"read_file"}');
+  doc.getElementById("convoClose").click();
+  assert.strictEqual(txt(doc.getElementById("providersStatus")), "Hermes Agent is set up");
+  assert.strictEqual(txt(doc.getElementById("settingsHint")), "Hermes Agent may use its tools first, so its seats can take longer.");
+});
+
+test("reasoning, inline or apart from the answer, goes into the conversation", async () => {
   const h = makeHarness({ behavior: req => {
     const id = req.body && who(req.body.messages[0].content);
     return id === "A" ? { sse: { think: true } } : id === "B" ? { sse: { reasoning: true } } : null;
   } });
   const { doc, win } = h;
   await sleep(20);
-  type(h, "key-openrouter", " sk-or-test ");
-  type(h, "model-chair", "anthropic/claude-opus-5.5");
+  onHermes(h);
   await convene(h);
   await waitFor(() => win.__quorum.S.phase === "done", 10000, "done");
   await sleep(40);
-  const posts = chats(h);
-  assert.strictEqual(posts.length, 7);
-  posts.forEach(r => {
-    assert.strictEqual(r.url, "https://openrouter.ai/api/v1/chat/completions");
-    assert.strictEqual(r.headers.Authorization, "Bearer sk-or-test");
-    assert.strictEqual(r.headers["X-Title"], "Quorum");
-    assert.strictEqual(r.headers["HTTP-Referer"], "https://example.org");
-    assert.strictEqual(r.body.stream, true);
-  });
-  const byId: Record<string, string> = {};
-  posts.forEach(r => { byId[who(r.body.messages[0].content)] = r.body.model; });
-  assert.deepStrictEqual(byId, { A: "nousresearch/hermes-4-70b", B: "nousresearch/hermes-4-70b", C: "nousresearch/hermes-4-70b", advocate: "nousresearch/hermes-4-405b", skeptic: "nousresearch/hermes-4-405b", strategist: "nousresearch/hermes-4-405b", chair: "anthropic/claude-opus-5.5" });
-  assert.ok(!posts.some(r => r.body.messages[0].content.includes("You may have tools")), "plain models aren't told about tools");
   const S = win.__quorum.S;
   assert.ok(!S.seats.A.text.includes("<think>") && S.seats.A.text.startsWith("# Shelf Share"), "think traces removed");
-  assert.strictEqual(txt(doc.getElementById("propTier")), "Agent: hermes-4-70b via OpenRouter");
-  assert.strictEqual(doc.getElementById("propTier").title, "OpenRouter: nousresearch/hermes-4-70b");
-  assert.strictEqual(txt(doc.getElementById("planTier")), "Agent: claude-opus-5.5 via OpenRouter");
-  assert.strictEqual(txt(doc.getElementById("verdict")), "Proposal B, \u201CLend Loop\u201D, wins with 8 of 9 possible points.");
-  assert.ok(!doc.getElementById("dlRecord").hidden, "plain downloads work outside Claude");
-  doc.getElementById("dlRecord").click();
-  await sleep(20);
-  assert.deepStrictEqual(h.downloads, ["council-record-the-plan.md"]);
-  assert.strictEqual(txt(doc.getElementById("dlRecord")), "Downloaded");
-  assert.strictEqual(win.localStorage.getItem("quorum:key:openrouter"), null, "keys aren't stored unless Remember is on");
-  // The reasoning a model writes, inline or apart from its answer, is in its conversation.
   doc.getElementById("propConvo").click();
   await sleep(30);
   const thought = () => doc.querySelector("#convoBody details.is-thinking");
-  assert.strictEqual(txt(thought().querySelector("summary")), "The Pragmatist thought \u00B7 4 words");
+  assert.strictEqual(txt(thought().querySelector("summary")), "The Pragmatist thought · 4 words");
   assert.strictEqual(thought().querySelector("pre").textContent, "Let me plan this.");
   assert.ok(!thought().open, "reasoning starts folded");
   assert.ok(txt(doc.querySelector("#convoBody .turn.is-answer .turn-doc")).startsWith("Shelf Share"), "the answer without its reasoning");
-  assert.strictEqual(doc.querySelector("#convoBody pre").textContent, posts.find(r => who(r.body.messages[0].content) === "A")!.body.messages[0].content);
-  assert.ok(/^hermes-4-70b via OpenRouter \u00B7 Finished after /.test(txt(doc.getElementById("convoMeta"))));
+  assert.strictEqual(doc.querySelector("#convoBody pre").textContent, chats(h).find(r => who(r.body.messages[0].content) === "A")!.body.messages[0].content);
   doc.getElementById("convoNext").click();
   await sleep(30);
   assert.strictEqual(thought().querySelector("pre").textContent, "Weigh the options.");
   doc.getElementById("convoSaveAll").click();
   await sleep(20);
-  assert.deepStrictEqual(h.downloads, ["council-record-the-plan.md", "council-conversations-the-plan.md"]);
-  assert.strictEqual(txt(doc.getElementById("settingsHint")), "OpenRouter bills your account for each request.");
+  assert.deepStrictEqual(h.downloads, ["council-conversations-the-plan.md"]);
 });
 
 test("a rejected key pauses the session, and fixing it lets it continue", async () => {
   let good = false;
-  const h = makeHarness({ behavior: req => (req.method === "POST" && !good ? { response: jsonResponse(401, { error: { code: 401, message: "No auth credentials found" } }) } : null) });
+  const h = makeHarness({ behavior: req => (req.method === "POST" && !good ? { response: jsonResponse(401, { error: { code: 401, message: "Invalid API key" } }) } : null) });
   const { doc, win } = h;
   await sleep(20);
-  type(h, "key-openrouter", "sk-or-wrong");
+  onHermes(h);
   await convene(h);
   await waitFor(() => win.__quorum.S.phase === "paused", 5000, "paused");
   await sleep(30);
-  assert.strictEqual(txt(doc.getElementById("noticeText")), "The Pragmatist, the Visionary and the Architect couldn't finish. OpenRouter rejected the API key. Check it under Providers, then retry.");
-  assert.strictEqual(txt(doc.getElementById("propNote")), "OpenRouter rejected the API key.");
+  assert.strictEqual(txt(doc.getElementById("noticeText")), "The Pragmatist, the Visionary and the Architect couldn't finish. Hermes Agent rejected the API key. Check it under Providers, then retry.");
+  assert.strictEqual(txt(doc.getElementById("propNote")), "Hermes Agent rejected the API key.");
   assert.ok(!doc.getElementById("provider-builders").disabled, "settings can change while paused");
   good = true;
-  type(h, "key-openrouter", "sk-or-right");
+  type(h, "key-hermes", "right-secret");
   doc.getElementById("noticeRetry").click();
   await waitFor(() => win.__quorum.S.phase === "done", 10000, "done");
-  assert.ok(chats(h).slice(3).every(r => r.headers.Authorization === "Bearer sk-or-right"), "the retry uses the corrected key");
+  // The naming and the three builders failed on the wrong key; on the retry, all of them ask again with the right one.
+  assert.ok(chats(h).slice(4).every(r => r.headers.Authorization === "Bearer right-secret"), "the retry uses the corrected key");
+  assert.strictEqual(txt(doc.getElementById("sessionName")), "Shared Tool Library for Neighbors, With Bins and a Sign-out Sheet", "a session that wasn't named is named when it resumes");
 });
 
 test("errors in the middle of a stream keep the partial text and can be retried", async () => {
@@ -256,11 +306,11 @@ test("errors in the middle of a stream keep the partial text and can be retried"
   } });
   const { doc, win } = h;
   await sleep(20);
-  type(h, "key-openrouter", "sk-or-test");
+  onHermes(h);
   await convene(h);
   await waitFor(() => win.__quorum.S.phase === "paused", 8000, "paused");
   await sleep(30);
-  assert.strictEqual(txt(doc.getElementById("noticeText")), "The Skeptic couldn't finish. The connection to OpenRouter dropped. Retry to continue where the council left off.");
+  assert.strictEqual(txt(doc.getElementById("noticeText")), "The Skeptic couldn't finish. The connection to Hermes Agent dropped. Retry to continue where the council left off.");
   doc.getElementById("noticeRetry").click();
   await waitFor(() => win.__quorum.S.phase === "done", 8000, "done");
   await sleep(30);
@@ -269,54 +319,16 @@ test("errors in the middle of a stream keep the partial text and can be retried"
   doc.getElementById("councilConvo").click();
   await sleep(30);
   assert.deepStrictEqual([...doc.querySelectorAll("#convoBody .convo-attempt")].map(txt), [
-    "Attempt 1 of 2 \u00B7 Couldn't finish: The connection to OpenRouter dropped before this was finished. (Provider disconnected unexpectedly)",
+    "Attempt 1 of 2 · Couldn't finish: The connection to Hermes Agent dropped before this was finished. (Provider disconnected unexpectedly)",
     "Attempt 2 of 2"]);
-  assert.deepStrictEqual([...doc.querySelectorAll("#convoBody .turn-head")].map(txt), ["The Skeptic had written this when it stopped", "The Skeptic\u2019s answer"]);
-});
-
-test("the builders can run on Hermes Agent with its tools", async () => {
-  const h = makeHarness({ behavior: req => (/8642/.test(req.url) && req.method === "POST" ? { sse: { tool: true, delay: 5 } } : null) });
-  const { doc, win } = h;
-  await sleep(20);
-  type(h, "provider-builders", "hermes", "change");
-  assert.strictEqual(doc.getElementById("model-builders").value, "hermes-agent");
-  assert.strictEqual(doc.getElementById("model-builders").getAttribute("list"), "models-hermes");
-  type(h, "key-openrouter", "sk-or-test");
-  await convene(h);
-  await sleep(20);
-  assert.strictEqual(txt(doc.getElementById("agentsNote")), "Add the Hermes Agent API key under Providers.");
-  type(h, "key-hermes", "local-secret");
-  doc.getElementById("check-hermes").click();
-  await sleep(20);
-  assert.strictEqual(txt(doc.getElementById("status-hermes")), "Connected. It offers \u201Chermes-agent\u201D.");
-  await convene(h);
-  await waitFor(() => win.__quorum.S.phase === "done", 10000, "done");
-  const hermesPosts = chats(h).filter(r => /8642/.test(r.url));
-  assert.strictEqual(hermesPosts.length, 3);
-  hermesPosts.forEach(r => {
-    assert.strictEqual(r.url, "http://127.0.0.1:8642/v1/chat/completions");
-    assert.strictEqual(r.headers.Authorization, "Bearer local-secret");
-    assert.strictEqual(r.body.model, "hermes-agent");
-    assert.ok(r.body.messages[0].content.includes("You may have tools that can read the project's files."));
-  });
-  assert.ok(chats(h).filter(r => /openrouter/.test(r.url)).every(r => !r.body.messages[0].content.includes("You may have tools")));
-  assert.strictEqual(txt(doc.getElementById("propTier")), "Agent: Hermes Agent");
-  doc.getElementById("propConvo").click();
-  await sleep(30);
-  const event = doc.querySelector("#convoBody details.is-tool");
-  assert.strictEqual(txt(event.querySelector("summary")), "hermes.tool.progress", "what Hermes Agent reported while it worked");
-  assert.strictEqual(event.querySelector("pre").textContent, '{"tool":"read_file"}');
-  doc.getElementById("convoClose").click();
-  assert.strictEqual(txt(doc.getElementById("providersStatus")), "OpenRouter is set up and Hermes Agent is set up");
-  assert.strictEqual(txt(doc.getElementById("settingsHint")), "OpenRouter bills your account for each request. Hermes Agent may use its tools first, so its seats can take longer.");
+  assert.deepStrictEqual([...doc.querySelectorAll("#convoBody .turn-head")].map(txt), ["The Skeptic had written this when it stopped", "The Skeptic’s answer"]);
 });
 
 test("an unreachable Hermes explains how to allow this page", async () => {
   const h = makeHarness({ behavior: req => (/8642/.test(req.url) ? { reject: true } : null) });
   const { doc, win } = h;
   await sleep(20);
-  ["builders", "council", "chair"].forEach(r => type(h, "provider-" + r, "hermes", "change"));
-  type(h, "key-hermes", "local-secret");
+  onHermes(h);
   doc.getElementById("check-hermes").click();
   await sleep(20);
   assert.strictEqual(txt(doc.getElementById("status-hermes")), "Couldn't reach Hermes Agent. Check that hermes gateway is running and that API_SERVER_CORS_ORIGINS includes https://example.org, then retry.");
@@ -333,33 +345,20 @@ test("a file page is told to use a local web server for Hermes", async () => {
   assert.ok(help.includes("serve Quorum locally first, for example with python3 -m http.server 8000"), help);
 });
 
-test("any OpenAI-compatible endpoint works, and keys are remembered only on request", async () => {
+test("keys are remembered only on request, and settings come back on the next visit", async () => {
   const h = makeHarness();
   const { doc, win } = h;
   await sleep(20);
-  ["builders", "council", "chair"].forEach(r => type(h, "provider-" + r, "custom", "change"));
-  await convene(h);
-  await sleep(20);
-  assert.strictEqual(txt(doc.getElementById("agentsNote")), "Enter a model for the builders.");
-  ["builders", "council", "chair"].forEach(r => type(h, "model-" + r, "llama3.1:8b"));
-  await convene(h);
-  await sleep(20);
-  assert.strictEqual(txt(doc.getElementById("agentsNote")), "Add the address of your endpoint under Providers.");
   type(h, "url-custom", "http://localhost:11434/v1/");
   type(h, "key-custom", "ollama");
+  assert.strictEqual(win.localStorage.getItem("quorum:key:custom"), null);
   doc.getElementById("remember-custom").click();
   await sleep(10);
   assert.strictEqual(win.localStorage.getItem("quorum:key:custom"), "ollama");
   assert.deepStrictEqual(JSON.parse(win.localStorage.getItem("quorum:providers")).urls, { hermes: "", custom: "http://localhost:11434/v1/" });
-  await convene(h);
-  await waitFor(() => win.__quorum.S.phase === "done", 10000, "done");
-  await sleep(30);
-  assert.ok(chats(h).every(r => r.url === "http://localhost:11434/v1/chat/completions" && r.body.model === "llama3.1:8b"));
-  assert.strictEqual(txt(doc.getElementById("planTier")), "Agent: llama3.1:8b via localhost:11434");
   doc.getElementById("remember-custom").click();
   await sleep(10);
   assert.strictEqual(win.localStorage.getItem("quorum:key:custom"), null, "unticking Remember forgets the key");
-  // a new visit restores remembered settings
   const h2 = makeHarness({ storage: {
     "quorum:providers": JSON.stringify({ urls: { hermes: "http://127.0.0.1:9000/v1", custom: "" }, remember: { openrouter: true, hermes: false, custom: false } }),
     "quorum:key:openrouter": "sk-or-saved",
@@ -369,8 +368,8 @@ test("any OpenAI-compatible endpoint works, and keys are remembered only on requ
   assert.strictEqual(h2.doc.getElementById("key-openrouter").value, "sk-or-saved");
   assert.ok(h2.doc.getElementById("remember-openrouter").checked);
   assert.strictEqual(h2.doc.getElementById("url-hermes").value, "http://127.0.0.1:9000/v1");
-  assert.deepStrictEqual(["builders", "council", "chair"].map(r => h2.doc.getElementById("provider-" + r).value + " " + h2.doc.getElementById("model-" + r).value),
-    ["hermes alice", "openrouter nousresearch/hermes-4-405b", "openrouter x/y"]);
+  assert.deepStrictEqual(ROLE_IDS.map(r => h2.doc.getElementById("provider-" + r).value + " " + h2.doc.getElementById("model-" + r).value),
+    ["hermes alice", "openrouter z-ai/glm-5.3", "openrouter x/y"]);
   assert.ok(!h2.doc.getElementById("providers").open, "the panel stays closed once something is set up");
 });
 
@@ -378,7 +377,7 @@ test("stopping aborts the requests in flight", async () => {
   const h = makeHarness({ behavior: req => (req.method === "POST" ? { sse: { delay: 60 } } : null) });
   const { doc, win } = h;
   await sleep(20);
-  type(h, "key-openrouter", "sk-or-test");
+  onHermes(h);
   await convene(h);
   await waitFor(() => win.__quorum.S.seats.A.status === "writing", 5000, "writing");
   await sleep(450);

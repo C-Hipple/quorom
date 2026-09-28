@@ -210,5 +210,8 @@ Ship behind a feature flag, first to internal users, then to 10% of workspaces, 
 ## Dissent
 The Skeptic ranked this proposal last, arguing that routing every export through a shared Celery broker lets one backlog slow them all, with nobody alerted. The concern is fair. The plan answers it with a dedicated queue, per-user limits and an alert on queue time, taken from Proposal C, while keeping B's single, predictable path for users.`;
 
-// Each seat's answer, by seat.
-export const answers: Record<string, string> = { A, B, C, advocate, skeptic, strategist, chair };
+// What the Chair's agent names the session.
+const name = "CSV Export for Every Report, Streamed When Small and Emailed When Large";
+
+// Each seat's answer, by seat, and the session's name.
+export const answers: Record<string, string> = { A, B, C, advocate, skeptic, strategist, chair, name };

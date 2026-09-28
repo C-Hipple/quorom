@@ -1,5 +1,6 @@
-// Records the screenshots in the README. It serves the built page, stands a scripted OpenRouter in for the real one,
-// and works through the "CSV export for reports" example, saving a picture of each stage to docs/screenshots.
+// Records the screenshots in the README. It serves the built page, stands a scripted local server in for Quorum's, with
+// every seat an agent on OpenRouter, and works through the "CSV export for reports" example, saving a picture of each
+// stage to docs/screenshots.
 //
 //   bun run screenshots
 //
@@ -33,8 +34,9 @@ interface StandIn {
   held(name: string): number;
 }
 
-// Runs in the page before Quorum does. It answers OpenRouter's chat completions from the script, a few words at a
-// time, the way a real stream arrives, and holds a seat at its gate until the gate is released.
+// Runs in the page before Quorum does. It stands in for Quorum's local server, with a project folder and every seat an
+// agent on OpenRouter: each agent reads the project's README, then writes its answer from the script a few words at a
+// time, the way a real stream arrives, and holds at its gate until the gate is released.
 function standIn({ answers, holds, pace }: { answers: Record<string, string>, holds: Holds, pace: number }) {
   const gates: Record<string, { open: boolean, waiters: (() => void)[], held: number }> = {};
   const gate = (name: string) => gates[name] || (gates[name] = { open: false, waiters: [], held: 0 });
@@ -44,32 +46,51 @@ function standIn({ answers, holds, pace }: { answers: Record<string, string>, ho
   };
   (window as unknown as { __standIn: StandIn }).__standIn = standIn;
   const SEATS: Record<string, string> = { "The Pragmatist": "A", "The Visionary": "B", "The Architect": "C", "The Advocate": "advocate", "The Skeptic": "skeptic", "The Strategist": "strategist", "the Chair": "chair" };
-  const seatOf = (prompt: string) => { const m = /^You are (The \w+|the Chair)/.exec(prompt); return m ? SEATS[m[1]] : ""; };
+  const seatOf = (prompt: string) => {
+    if (/^Name a session/.test(prompt)) return "name";
+    const m = /^You are (The \w+|the Chair)/.exec(prompt);
+    return m ? SEATS[m[1]] : "";
+  };
+  const PROJECT = "/home/you/reports-app";
+  const json = (o: unknown) => new Response(JSON.stringify(o), { headers: { "content-type": "application/json" } });
   const realFetch = window.fetch.bind(window);
   window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String((input && (input as Request).url) || input);
-    if (!url.startsWith("https://openrouter.ai/api/v1/")) return realFetch(input, init);
-    if (url.endsWith("/models")) return new Response('{"data":[]}', { headers: { "content-type": "application/json" } });
+    if (url === "https://openrouter.ai/api/v1/models") return json({ data: [] });
+    if (!url.startsWith(location.origin + "/api/")) return realFetch(input, init);
+    const route = url.slice(location.origin.length);
+    if (route === "/api/local") return json({ claudeCode: { available: false, version: null }, sessions: null, project: PROJECT, home: "/home/you" });
+    if (route.startsWith("/api/folder")) {
+      return json({ path: PROJECT, name: "reports-app", parent: "/home/you", dirs: [], more: 0, unreadable: false,
+        git: { root: PROJECT, branch: "main", detached: null }, claudeMd: false, agentsMd: true });
+    }
+    if (route !== "/api/agent") return json({ error: { code: "not_found", message: "Not found." } });
     const body = JSON.parse((init as RequestInit).body as string);
-    const seat = seatOf(body.messages[0].content);
-    const pieces = answers[seat].match(/[\s\S]{1,24}/g) as string[];
+    const seat = seatOf(body.prompt);
+    const answer = answers[seat];
+    const pieces = answer.match(/[\s\S]{1,24}/g) as string[];
     const hold = holds[seat];
     const holdAt = hold ? Math.floor(pieces.length * hold[1]) : -1;
     const enc = new TextEncoder();
     return new Response(new ReadableStream({
       async start(c) {
-        const send = (o: unknown) => c.enqueue(enc.encode("data: " + JSON.stringify(o) + "\n\n"));
+        const send = (event: string, data: unknown) => c.enqueue(enc.encode("event: " + event + "\ndata: " + JSON.stringify(data) + "\n\n"));
+        send("start", { model: body.model, tools: ["Read", "Grep", "Glob"] });
+        send("turn", {});
+        send("tool", { id: "t1", tool: "Read", detail: "README.md", input: { file_path: "README.md" } });
+        send("tool_result", { id: "t1", content: "# Reports\nReports are built by ReportService.", error: false });
+        send("turn", {});
         for (let i = 0; i < pieces.length; i++) {
           const g = hold && gate(hold[0]);
           if (g && i === holdAt && !g.open) {
             g.held += 1;
             await new Promise<void>(go => g.waiters.push(go));
           }
-          send({ model: body.model, choices: [{ index: 0, delta: { content: pieces[i] } }] });
+          send("text", { delta: pieces[i] });
           await new Promise(r => setTimeout(r, pace));
         }
-        send({ model: body.model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
-        c.enqueue(enc.encode("data: [DONE]\n\n"));
+        send("block", { type: "text", text: answer });
+        send("done", { text: answer, truncated: false, model: body.model, usage: { turns: 2 } });
         c.close();
       },
     }), { headers: { "content-type": "text/event-stream" } });

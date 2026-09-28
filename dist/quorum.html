@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Quorum</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%9B%EF%B8%8F%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&family=Public+Sans:wght@400..800&display=swap">
@@ -157,6 +158,8 @@ button, input, textarea { font: inherit; color: inherit; }
     padding: 32px 28px 24px;
   }
   .record { padding: 56px 48px 160px; }
+  /* The rail's foot, with Settings and History, stays in view when the rail is taller than the window. */
+  .rail-foot { position: sticky; bottom: -24px; z-index: 1; margin-bottom: -24px; padding-bottom: 24px; background: var(--chamber); }
 }
 
 /* ---------- Chamber rail ---------- */
@@ -234,15 +237,36 @@ button, input, textarea { font: inherit; color: inherit; }
 .stage-btn[data-state="tied"] .stage-mark { background: linear-gradient(90deg, var(--chamber-ink) 50%, transparent 50%); border-color: var(--chamber-ink); }
 .stage-btn[data-state="paused"] .stage-mark,
 .stage-btn[data-state="stopped"] .stage-mark { border-color: var(--chamber-danger); border-style: dashed; }
-.rail-foot {
-  margin-top: auto;
-  padding-top: 20px;
-  display: flex;
+.rail-foot { margin-top: auto; padding-top: 20px; display: grid; gap: 14px; }
+.rail-now { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; }
+.rail-tools { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 12px; border-top: 1px solid var(--chamber-rule); }
+.rail-tool {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 44px;
+  gap: 8px;
+  padding: 8px 12px 8px 10px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--chamber-ink);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
 }
+.rail-tool:hover, .rail-tool[aria-expanded="true"] { border-color: var(--chamber-rule); background: rgba(255, 255, 255, 0.06); }
+.rail-tool svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.rail-badge {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--chamber-ink);
+  color: var(--chamber);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+.rail-badge.is-dot { min-width: 0; width: 8px; height: 8px; padding: 0; background: var(--b); }
 .clock { margin: 0; font-size: 0.875rem; color: var(--chamber-muted); font-variant-numeric: tabular-nums; }
 .save-state { margin: 2px 0 0; font-size: 0.8125rem; color: var(--chamber-muted); }
 .save-state.is-error { color: var(--chamber-danger); }
@@ -253,6 +277,14 @@ button, input, textarea { font: inherit; color: inherit; }
   padding: 9px 16px;
 }
 .btn-rail:hover { border-color: var(--chamber-ink); }
+
+.rail-usage { margin-top: 16px; }
+.rail-usage-title { margin: 0 0 6px; color: var(--chamber-muted); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.rail-usage-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.rail-usage-row { display: grid; gap: 1px; font-size: 0.8125rem; line-height: 1.35; }
+.rail-usage-row.is-total { padding-top: 7px; border-top: 1px solid var(--chamber-rule); }
+.rail-usage-who { font-weight: 600; overflow-wrap: anywhere; }
+.rail-usage-n { color: var(--chamber-muted); font-variant-numeric: tabular-nums; }
 
 .rail-convo {
   margin-top: 14px;
@@ -270,6 +302,14 @@ button, input, textarea { font: inherit; color: inherit; }
 }
 .rail-convo:hover { text-decoration-color: var(--chamber-ink); }
 
+/* On a shorter window the rail tightens up, so the tokens used fit above its foot. */
+@media (min-width: 960px) and (max-height: 960px) {
+  .tagline { display: none; }
+  .hemicycle { margin: 14px 0 2px; }
+  .hemicycle svg { max-width: 240px; }
+  .status { margin: 6px 0 12px; min-height: 0; }
+  .stage-btn { padding: 8px 2px; }
+}
 @media (max-width: 959px) {
   .chamber-inner {
     display: grid;
@@ -281,8 +321,10 @@ button, input, textarea { font: inherit; color: inherit; }
   .brand { grid-column: 1; grid-row: 1; }
   .hemicycle { grid-column: 2; grid-row: 1 / span 3; margin: 0; }
   .status { grid-column: 1; grid-row: 2; margin: 10px 0 0; min-height: 0; }
-  .stages, .btn-rail, .rail-convo { display: none; }
-  .rail-foot { grid-column: 1; grid-row: 3; margin: 0; padding-top: 6px; min-height: 0; }
+  .stages, .btn-rail, .rail-convo, .rail-usage { display: none; }
+  .rail-foot { grid-column: 1; grid-row: 3; margin: 0; padding-top: 6px; gap: 6px; }
+  .rail-now { min-height: 0; }
+  .rail-tools { padding-top: 0; border-top: 0; margin-left: -10px; }
 }
 @media (max-width: 559px) {
   .chamber-inner { grid-template-columns: minmax(0, 1fr); }
@@ -340,7 +382,6 @@ button, input, textarea { font: inherit; color: inherit; }
 
 /* ---------- Context ---------- */
 /* ---------- Saved sessions ---------- */
-.sessions { margin: 0 0 28px; }
 .session-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .session-list:empty { display: none; }
 .session-item {
@@ -509,6 +550,8 @@ button, input, textarea { font: inherit; color: inherit; }
 .agent-provider:disabled, .agent-tier:disabled, .agent-model:disabled { opacity: 0.6; cursor: not-allowed; }
 .agent-model[aria-invalid="true"] { border-color: var(--danger); }
 .settings-title { margin: 0 0 2px; font-size: 0.875rem; font-weight: 600; }
+.agents-summary { margin: 0 0 4px; max-width: 60ch; font-size: 0.9375rem; }
+.agents-summary .link-btn { margin-left: 4px; }
 .setting { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .setting.is-length { margin-top: 8px; }
 .setting-label { width: 64px; font-size: 0.9375rem; }
@@ -690,6 +733,7 @@ button, input, textarea { font: inherit; color: inherit; }
 .sec-num { font: 500 1.375rem/1 var(--serif); color: var(--muted); margin-right: 8px; }
 .sec-note { margin: 0 0 0 auto; color: var(--muted); font-size: 0.875rem; }
 .sec-intro { margin: 0 0 20px; color: var(--muted); max-width: 64ch; }
+.session-name { margin: 0 0 20px; font: 500 1.375rem/1.3 var(--serif); max-width: 48ch; text-wrap: balance; }
 .motion-intro { margin: 0 0 6px; color: var(--muted); font-size: 0.875rem; }
 .motion-project { margin: -16px 0 28px; color: var(--muted); font-size: 0.875rem; overflow-wrap: anywhere; }
 .motion-project code { color: var(--ink); font: 0.8125rem var(--mono); }
@@ -913,7 +957,7 @@ button, input, textarea { font: inherit; color: inherit; }
 .convo-link:hover { color: var(--ink); }
 .qa-who .convo-link { margin-left: 8px; font-weight: 500; }
 .round-actions { margin: 16px 0 0; }
-.is-convo-open, .is-convo-open body { overflow: hidden; }
+.is-convo-open, .is-convo-open body, .is-drawer-open, .is-drawer-open body { overflow: hidden; }
 .convo { position: fixed; inset: 0; z-index: 40; display: flex; justify-content: flex-end; }
 .convo-scrim { position: absolute; inset: 0; background: var(--scrim); }
 .convo-panel {
@@ -984,6 +1028,35 @@ button, input, textarea { font: inherit; color: inherit; }
   .convo-meta { margin-left: 16px; margin-right: 16px; }
   .convo-link { display: inline-block; margin: 4px 0 0; }
   .byline .convo-link { display: block; }
+}
+
+/* ---------- Settings and History drawers ---------- */
+.drawer { position: fixed; inset: 0; z-index: 40; display: flex; justify-content: flex-start; }
+.drawer-scrim { position: absolute; inset: 0; background: var(--scrim); }
+.drawer-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  height: 100%;
+  padding-top: env(safe-area-inset-top, 0px);
+  background: var(--paper);
+  color: var(--ink);
+  border-right: 1px solid var(--rule);
+  box-shadow: 12px 0 36px rgba(0, 0, 0, 0.18);
+}
+.drawer-head { display: flex; align-items: baseline; gap: 12px; padding: 18px 24px 14px; border-bottom: 1px solid var(--rule); }
+.drawer-head .btn { margin-left: auto; align-self: center; }
+.drawer-title { margin: 0; font: 600 1.375rem/1.2 var(--serif); }
+.drawer-title:focus { outline: none; }
+.drawer-status { margin: 0; color: var(--muted); font-size: 0.875rem; }
+.drawer-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 8px; padding: 20px 24px calc(28px + env(safe-area-inset-bottom, 0px)); }
+.drawer-sub { margin: 0 0 2px; font-size: 1rem; font-weight: 600; }
+.drawer-intro { margin: 0 0 8px; max-width: 60ch; color: var(--muted); font-size: 0.875rem; }
+.drawer .agents { display: grid; gap: 8px; }
+.drawer .providers { margin-top: 20px; }
+@media (max-width: 559px) {
+  .drawer-head, .drawer-body { padding-left: 16px; padding-right: 16px; }
 }
 
 /* ---------- Notice ---------- */
@@ -1091,11 +1164,31 @@ button, input, textarea { font: inherit; color: inherit; }
         <li id="stageReview" hidden><button type="button" class="stage-btn" data-stage="review" data-target="sec-review" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">4</span>Final review</span><span class="stage-state">Waiting</span></button></li>
         <li><button type="button" class="stage-btn" data-stage="plan" data-target="sec-plan" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">4</span>Final plan</span><span class="stage-state">Waiting</span></button></li>
       </ol>
+      <div class="rail-usage" id="railUsage" hidden>
+        <p class="rail-usage-title" id="railUsageTitle">Tokens used</p>
+        <ul class="rail-usage-list" id="railUsageList" aria-labelledby="railUsageTitle"></ul>
+      </div>
       <button type="button" class="rail-convo" id="railConvo" hidden>Every agent’s conversation</button>
       <div class="rail-foot">
-        <p class="clock" id="clock"></p>
-        <p class="save-state" id="saveState" role="status" hidden></p>
-        <button type="button" class="btn btn-rail" id="railStop" hidden>Stop</button>
+        <div class="rail-now">
+          <div class="rail-time">
+            <p class="clock" id="clock"></p>
+            <p class="save-state" id="saveState" role="status" hidden></p>
+          </div>
+          <button type="button" class="btn btn-rail" id="railStop" hidden>Stop</button>
+        </div>
+        <div class="rail-tools">
+          <button type="button" class="rail-tool" id="openSettings" aria-haspopup="dialog" aria-controls="settingsDrawer">
+            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M3 5h8M15 5h2M3 10h2M9 10h8M3 15h10"/><circle cx="13" cy="5" r="2"/><circle cx="7" cy="10" r="2"/><circle cx="15" cy="15" r="2"/></svg>
+            <span>Settings</span>
+            <span class="rail-badge is-dot" id="settingsBadge" hidden><span class="visually-hidden">, a provider needs setting up</span></span>
+          </button>
+          <button type="button" class="rail-tool" id="openHistory" aria-haspopup="dialog" aria-controls="historyDrawer" hidden>
+            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l2.5 2"/></svg>
+            <span>History</span>
+            <span class="rail-badge" id="historyBadge" hidden></span>
+          </button>
+        </div>
       </div>
     </div>
   </aside>
@@ -1104,13 +1197,6 @@ button, input, textarea { font: inherit; color: inherit; }
     <section class="motion" aria-labelledby="motion-title">
       <h1 class="motion-title" id="motion-title">Put a feature before the council</h1>
       <p class="lede">Describe a feature for an existing software project, then paste in whatever the council should work from, like product requirements, how the system works today, constraints or relevant code. Three builders propose implementations, the council votes, and the Chair writes the implementation plan.</p>
-      <details class="providers sessions" id="sessions" hidden>
-        <summary><span class="providers-title">Saved sessions</span><span class="providers-status" id="sessionsStatus"></span></summary>
-        <div class="providers-body">
-          <p class="providers-intro" id="sessionsIntro"></p>
-          <ul class="session-list" id="sessionList"></ul>
-        </div>
-      </details>
       <div class="project" id="project" hidden>
         <label class="field-label" for="projectPath">Project folder</label>
         <div class="project-row">
@@ -1151,92 +1237,9 @@ button, input, textarea { font: inherit; color: inherit; }
       <div class="controls">
         <div class="settings" id="settings">
           <p class="settings-title">Agents</p>
-          <div class="agent-row">
-            <span class="setting-label" aria-hidden="true">Builders</span>
-            <div class="agent-controls">
-              <label class="visually-hidden" for="provider-builders">Provider for the builders</label>
-              <select class="agent-provider" id="provider-builders" data-role="builders">
-                <option value="claude">Claude</option>
-                <option value="claude-code">Claude Code</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="hermes">Hermes Agent</option>
-                <option value="custom">Other endpoint</option>
-              </select>
-              <label class="visually-hidden" for="tier-builders">Claude model for the builders</label>
-              <select class="agent-tier" id="tier-builders" data-role="builders">
-                <option value="quick">Fast</option>
-                <option value="default">Balanced</option>
-                <option value="complex">Frontier</option>
-              </select>
-              <label class="visually-hidden" for="model-builders">Model for the builders</label>
-              <input class="agent-model" id="model-builders" data-role="builders" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
-            </div>
-          </div>
-          <div class="agent-row">
-            <span class="setting-label" aria-hidden="true">Council</span>
-            <div class="agent-controls">
-              <label class="visually-hidden" for="provider-council">Provider for the council</label>
-              <select class="agent-provider" id="provider-council" data-role="council">
-                <option value="claude">Claude</option>
-                <option value="claude-code">Claude Code</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="hermes">Hermes Agent</option>
-                <option value="custom">Other endpoint</option>
-              </select>
-              <label class="visually-hidden" for="tier-council">Claude model for the council</label>
-              <select class="agent-tier" id="tier-council" data-role="council">
-                <option value="quick">Fast</option>
-                <option value="default">Balanced</option>
-                <option value="complex">Frontier</option>
-              </select>
-              <label class="visually-hidden" for="model-council">Model for the council</label>
-              <input class="agent-model" id="model-council" data-role="council" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
-            </div>
-          </div>
-          <div class="agent-row">
-            <span class="setting-label" aria-hidden="true">Chair</span>
-            <div class="agent-controls">
-              <label class="visually-hidden" for="provider-chair">Provider for the Chair</label>
-              <select class="agent-provider" id="provider-chair" data-role="chair">
-                <option value="claude">Claude</option>
-                <option value="claude-code">Claude Code</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="hermes">Hermes Agent</option>
-                <option value="custom">Other endpoint</option>
-              </select>
-              <label class="visually-hidden" for="tier-chair">Claude model for the Chair</label>
-              <select class="agent-tier" id="tier-chair" data-role="chair">
-                <option value="quick">Fast</option>
-                <option value="default">Balanced</option>
-                <option value="complex">Frontier</option>
-              </select>
-              <label class="visually-hidden" for="model-chair">Model for the Chair</label>
-              <input class="agent-model" id="model-chair" data-role="chair" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
-            </div>
-          </div>
+          <p class="agents-summary"><span id="agentsSummary"></span> <button type="button" class="link-btn" id="changeAgents" aria-haspopup="dialog" aria-controls="settingsDrawer">Change</button></p>
           <label class="check review-toggle"><input type="checkbox" id="questionsOn" checked> Questions: before the vote, the council questions each proposal on edge cases, missing requirements and technical debt, and its builder answers and adjusts it</label>
           <label class="check review-toggle"><input type="checkbox" id="reviewOn"> Final review: have the plan checked for scaling and security, and revised, before it's final</label>
-          <div class="agent-row" id="row-review" hidden>
-            <span class="setting-label" aria-hidden="true">Review</span>
-            <div class="agent-controls">
-              <label class="visually-hidden" for="provider-review">Provider for the final review</label>
-              <select class="agent-provider" id="provider-review" data-role="review">
-                <option value="claude">Claude</option>
-                <option value="claude-code">Claude Code</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="hermes">Hermes Agent</option>
-                <option value="custom">Other endpoint</option>
-              </select>
-              <label class="visually-hidden" for="tier-review">Claude model for the final review</label>
-              <select class="agent-tier" id="tier-review" data-role="review">
-                <option value="quick">Fast</option>
-                <option value="default">Balanced</option>
-                <option value="complex">Frontier</option>
-              </select>
-              <label class="visually-hidden" for="model-review">Model for the final review</label>
-              <input class="agent-model" id="model-review" data-role="review" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
-            </div>
-          </div>
           <fieldset class="setting is-length">
             <legend class="visually-hidden">Length of each document</legend>
             <span class="setting-label" aria-hidden="true">Length</span>
@@ -1256,51 +1259,6 @@ button, input, textarea { font: inherit; color: inherit; }
       </div>
       <p class="tier-note" id="tierNote" hidden></p>
 
-      <details class="providers" id="providers">
-        <summary><span class="providers-title">Providers</span><span class="providers-status" id="providersStatus"></span></summary>
-        <div class="providers-body">
-          <p class="providers-intro" id="providersIntro"></p>
-          <fieldset class="provider" id="set-claude-code">
-            <legend>Claude Code</legend>
-            <p class="provider-status" id="status-claude-code"></p>
-            <p class="provider-help">Seats on Claude Code run inside the project folder, signed in as you are in Claude Code, and read the project's CLAUDE.md. They can read and search the project's files, and can't change them, run commands, reach outside the folder or use your MCP servers.</p>
-          </fieldset>
-          <fieldset class="provider" id="set-openrouter">
-            <legend>OpenRouter</legend>
-            <div class="provider-fields">
-              <label class="provider-field"><span>API key</span><input type="password" id="key-openrouter" autocomplete="off" spellcheck="false" placeholder="sk-or-…"></label>
-            </div>
-            <label class="check"><input type="checkbox" id="remember-openrouter"> Remember on this device</label>
-            <p class="provider-help">Create a key at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">openrouter.ai/keys</a>. Requests are billed to your OpenRouter account, and the model fields suggest what OpenRouter offers.</p>
-          </fieldset>
-          <fieldset class="provider" id="set-hermes">
-            <legend>Hermes Agent</legend>
-            <div class="provider-fields">
-              <label class="provider-field"><span>Address</span><input type="url" id="url-hermes" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:8642/v1"></label>
-              <label class="provider-field"><span>API key</span><input type="password" id="key-hermes" autocomplete="off" spellcheck="false" placeholder="Your API_SERVER_KEY"></label>
-            </div>
-            <label class="check"><input type="checkbox" id="remember-hermes"> Remember on this device</label>
-            <div class="provider-actions">
-              <button type="button" class="btn btn-quiet btn-small" id="check-hermes">Check connection</button>
-              <p class="provider-status" id="status-hermes" role="status"></p>
-            </div>
-            <p class="provider-help" id="help-hermes"></p>
-          </fieldset>
-          <fieldset class="provider" id="set-custom">
-            <legend>Other OpenAI-compatible endpoint</legend>
-            <div class="provider-fields">
-              <label class="provider-field"><span>Address</span><input type="url" id="url-custom" autocomplete="off" spellcheck="false" placeholder="http://localhost:11434/v1"></label>
-              <label class="provider-field"><span>API key, if it needs one</span><input type="password" id="key-custom" autocomplete="off" spellcheck="false"></label>
-            </div>
-            <label class="check"><input type="checkbox" id="remember-custom"> Remember on this device</label>
-            <div class="provider-actions">
-              <button type="button" class="btn btn-quiet btn-small" id="check-custom">Check connection</button>
-              <p class="provider-status" id="status-custom" role="status"></p>
-            </div>
-            <p class="provider-help">Any service that speaks the OpenAI chat completions format, such as Ollama, LM Studio, vLLM or LiteLLM, as long as it accepts requests from this page.</p>
-          </fieldset>
-        </div>
-      </details>
       <datalist id="models-claude-code"></datalist>
       <datalist id="models-openrouter"></datalist>
       <datalist id="models-hermes"></datalist>
@@ -1338,7 +1296,7 @@ button, input, textarea { font: inherit; color: inherit; }
           <li><span class="badge is-ring" aria-hidden="true"></span><p><strong>The Security Reviewer</strong> checks the plan for security and privacy: access, data exposure, injection, secrets and abuse. The Chair then revises the plan to address both reviews.</p></li>
         </ul>
       </div>
-      <p class="roster-foot">A session makes seven requests: three proposals, three reviews and the plan. The council's questions add up to twelve more, three councilors questioning each proposal and each builder answering, and the final review three more. Each role runs on the agent you choose, so the builders can draft on a fast, cheap model while the council and the Chair decide on a frontier one. Inside claude.ai the agents run on Claude; opened on its own, Quorum can use OpenRouter, Hermes Agent or another OpenAI-compatible service, and run with <code>bun start</code>, it can use Claude Code working inside your project folder.</p>
+      <p class="roster-foot">A session makes seven requests: three proposals, three reviews and the plan. The council's questions add up to twelve more, three councilors questioning each proposal and each builder answering, and the final review three more. Each role runs on the agent you choose, so the builders can draft on a fast, cheap model while the council and the Chair decide on a frontier one. Inside claude.ai the agents run on Claude. Run with <code>bun start</code>, every seat can be an agent working inside your project folder, on Claude Code, OpenRouter or another OpenAI-compatible service, and Quorum can also use Hermes Agent.</p>
     </section>
 
     <section class="stage-sec" id="sec-proposals" aria-labelledby="h-proposals" hidden>
@@ -1346,6 +1304,7 @@ button, input, textarea { font: inherit; color: inherit; }
         <h2 class="sec-title" id="h-proposals" tabindex="-1"><span class="sec-num">1</span>Proposals</h2>
         <p class="sec-note" id="propCount"></p>
       </div>
+      <p class="session-name" id="sessionName" hidden></p>
       <p class="motion-intro">The council is considering:</p>
       <blockquote class="motion-quote" id="motionQuote"></blockquote>
       <p class="motion-project" id="motionProject" hidden></p>
@@ -1535,6 +1494,167 @@ button, input, textarea { font: inherit; color: inherit; }
     <div class="convo-foot">
       <button type="button" class="btn btn-quiet btn-small" id="convoCopy">Copy as Markdown</button>
       <button type="button" class="btn btn-quiet btn-small" id="convoSaveAll">Download every conversation</button>
+    </div>
+  </section>
+</div>
+
+<div class="drawer" id="settingsDrawer" hidden>
+  <div class="drawer-scrim" data-close></div>
+  <section class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="drawer-head">
+      <h2 class="drawer-title" id="settingsTitle" tabindex="-1">Settings</h2>
+      <button type="button" class="btn btn-quiet btn-small" data-close>Close</button>
+    </div>
+    <div class="drawer-body">
+      <section class="agents" aria-labelledby="agentsTitle">
+        <h3 class="drawer-sub" id="agentsTitle">Agents</h3>
+        <p class="drawer-intro">Each role runs on its own provider and model, so the builders can draft on a fast, cheap model while the council and the Chair decide on a frontier one. The Chair's agent also names each session.</p>
+        <p class="field-note" id="settingsNote" hidden></p>
+        <div class="agent-row">
+          <span class="setting-label" aria-hidden="true">Builders</span>
+          <div class="agent-controls">
+            <label class="visually-hidden" for="provider-builders">Provider for the builders</label>
+            <select class="agent-provider" id="provider-builders" data-role="builders">
+              <option value="claude">Claude</option>
+              <option value="claude-code">Claude Code</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="hermes">Hermes Agent</option>
+              <option value="custom">Other endpoint</option>
+            </select>
+            <label class="visually-hidden" for="tier-builders">Claude model for the builders</label>
+            <select class="agent-tier" id="tier-builders" data-role="builders">
+              <option value="quick">Fast</option>
+              <option value="default">Balanced</option>
+              <option value="complex">Frontier</option>
+            </select>
+            <label class="visually-hidden" for="model-builders">Model for the builders</label>
+            <input class="agent-model" id="model-builders" data-role="builders" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+          </div>
+        </div>
+        <div class="agent-row">
+          <span class="setting-label" aria-hidden="true">Council</span>
+          <div class="agent-controls">
+            <label class="visually-hidden" for="provider-council">Provider for the council</label>
+            <select class="agent-provider" id="provider-council" data-role="council">
+              <option value="claude">Claude</option>
+              <option value="claude-code">Claude Code</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="hermes">Hermes Agent</option>
+              <option value="custom">Other endpoint</option>
+            </select>
+            <label class="visually-hidden" for="tier-council">Claude model for the council</label>
+            <select class="agent-tier" id="tier-council" data-role="council">
+              <option value="quick">Fast</option>
+              <option value="default">Balanced</option>
+              <option value="complex">Frontier</option>
+            </select>
+            <label class="visually-hidden" for="model-council">Model for the council</label>
+            <input class="agent-model" id="model-council" data-role="council" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+          </div>
+        </div>
+        <div class="agent-row">
+          <span class="setting-label" aria-hidden="true">Chair</span>
+          <div class="agent-controls">
+            <label class="visually-hidden" for="provider-chair">Provider for the Chair</label>
+            <select class="agent-provider" id="provider-chair" data-role="chair">
+              <option value="claude">Claude</option>
+              <option value="claude-code">Claude Code</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="hermes">Hermes Agent</option>
+              <option value="custom">Other endpoint</option>
+            </select>
+            <label class="visually-hidden" for="tier-chair">Claude model for the Chair</label>
+            <select class="agent-tier" id="tier-chair" data-role="chair">
+              <option value="quick">Fast</option>
+              <option value="default">Balanced</option>
+              <option value="complex">Frontier</option>
+            </select>
+            <label class="visually-hidden" for="model-chair">Model for the Chair</label>
+            <input class="agent-model" id="model-chair" data-role="chair" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+          </div>
+        </div>
+        <div class="agent-row" id="row-review" hidden>
+          <span class="setting-label" aria-hidden="true">Review</span>
+          <div class="agent-controls">
+            <label class="visually-hidden" for="provider-review">Provider for the final review</label>
+            <select class="agent-provider" id="provider-review" data-role="review">
+              <option value="claude">Claude</option>
+              <option value="claude-code">Claude Code</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="hermes">Hermes Agent</option>
+              <option value="custom">Other endpoint</option>
+            </select>
+            <label class="visually-hidden" for="tier-review">Claude model for the final review</label>
+            <select class="agent-tier" id="tier-review" data-role="review">
+              <option value="quick">Fast</option>
+              <option value="default">Balanced</option>
+              <option value="complex">Frontier</option>
+            </select>
+            <label class="visually-hidden" for="model-review">Model for the final review</label>
+            <input class="agent-model" id="model-review" data-role="review" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+          </div>
+        </div>
+      </section>
+      <details class="providers" id="providers">
+        <summary><span class="providers-title">Providers</span><span class="providers-status" id="providersStatus"></span></summary>
+        <div class="providers-body">
+          <p class="providers-intro" id="providersIntro"></p>
+          <fieldset class="provider" id="set-claude-code">
+            <legend>Claude Code</legend>
+            <p class="provider-status" id="status-claude-code"></p>
+            <p class="provider-help">Seats on Claude Code run inside the project folder, signed in as you are in Claude Code, and read the project's CLAUDE.md. They can read and search the project's files, and can't change them, run commands, reach outside the folder or use your MCP servers.</p>
+          </fieldset>
+          <fieldset class="provider" id="set-openrouter">
+            <legend>OpenRouter</legend>
+            <div class="provider-fields">
+              <label class="provider-field"><span>API key</span><input type="password" id="key-openrouter" autocomplete="off" spellcheck="false" placeholder="sk-or-…"></label>
+            </div>
+            <label class="check"><input type="checkbox" id="remember-openrouter"> Remember on this device</label>
+            <p class="provider-help">Seats on OpenRouter run as agents on Quorum's server, inside the project folder, and read the project's AGENTS.md. They can read and search the project's files, and can't change them, run commands or reach outside the folder, so their model has to support tool calling. Create a key at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">openrouter.ai/keys</a>. Requests are billed to your OpenRouter account, and the model fields suggest what OpenRouter offers.</p>
+          </fieldset>
+          <fieldset class="provider" id="set-hermes">
+            <legend>Hermes Agent</legend>
+            <div class="provider-fields">
+              <label class="provider-field"><span>Address</span><input type="url" id="url-hermes" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:8642/v1"></label>
+              <label class="provider-field"><span>API key</span><input type="password" id="key-hermes" autocomplete="off" spellcheck="false" placeholder="Your API_SERVER_KEY"></label>
+            </div>
+            <label class="check"><input type="checkbox" id="remember-hermes"> Remember on this device</label>
+            <div class="provider-actions">
+              <button type="button" class="btn btn-quiet btn-small" id="check-hermes">Check connection</button>
+              <p class="provider-status" id="status-hermes" role="status"></p>
+            </div>
+            <p class="provider-help" id="help-hermes"></p>
+          </fieldset>
+          <fieldset class="provider" id="set-custom">
+            <legend>Other OpenAI-compatible endpoint</legend>
+            <div class="provider-fields">
+              <label class="provider-field"><span>Address</span><input type="url" id="url-custom" autocomplete="off" spellcheck="false" placeholder="http://localhost:11434/v1"></label>
+              <label class="provider-field"><span>API key, if it needs one</span><input type="password" id="key-custom" autocomplete="off" spellcheck="false"></label>
+            </div>
+            <label class="check"><input type="checkbox" id="remember-custom"> Remember on this device</label>
+            <div class="provider-actions">
+              <button type="button" class="btn btn-quiet btn-small" id="check-custom">Check connection</button>
+              <p class="provider-status" id="status-custom" role="status"></p>
+            </div>
+            <p class="provider-help">Any service that speaks the OpenAI chat completions format with tool calling, such as Ollama, LM Studio, vLLM or LiteLLM. Its seats run as agents on Quorum's server, inside the project folder, the same way as OpenRouter's, and the server is what calls the service.</p>
+          </fieldset>
+        </div>
+      </details>
+    </div>
+  </section>
+</div>
+
+<div class="drawer" id="historyDrawer" hidden>
+  <div class="drawer-scrim" data-close></div>
+  <section class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="historyTitle">
+    <div class="drawer-head">
+      <h2 class="drawer-title" id="historyTitle" tabindex="-1">History</h2>
+      <p class="drawer-status" id="sessionsStatus"></p>
+      <button type="button" class="btn btn-quiet btn-small" data-close>Close</button>
+    </div>
+    <div class="drawer-body">
+      <p class="providers-intro" id="sessionsIntro"></p>
+      <ul class="session-list" id="sessionList"></ul>
     </div>
   </section>
 </div>
@@ -1764,9 +1884,9 @@ var Core = function(Graph2) {
   const PROVIDERS = {
     claude: { label: "Claude", external: false },
     "claude-code": { label: "Claude Code", external: true, local: true, agentic: true },
-    openrouter: { label: "OpenRouter", external: true, needsKey: true },
+    openrouter: { label: "OpenRouter", external: true, local: true, agentic: true, needsKey: true },
     hermes: { label: "Hermes Agent", external: true, needsKey: true, agentic: true, defaultUrl: "http://127.0.0.1:8642/v1" },
-    custom: { label: "Other endpoint", external: true }
+    custom: { label: "Other endpoint", external: true, local: true, agentic: true }
   };
   const PROVIDER_IDS = ["claude", "claude-code", "openrouter", "hermes", "custom"];
   const CLAUDE_CODE_MODELS = [
@@ -1775,15 +1895,15 @@ var Core = function(Graph2) {
     { id: "haiku", name: "Haiku" },
     { id: "fable", name: "Fable" }
   ];
+  const OPENROUTER_MODEL = "z-ai/glm-5.3";
   const OPENROUTER_PRESETS = [
-    { id: "nousresearch/hermes-4-70b", name: "Nous: Hermes 4 70B" },
-    { id: "nousresearch/hermes-4-405b", name: "Nous: Hermes 4 405B" }
+    { id: OPENROUTER_MODEL, name: "Z.ai: GLM 5.3" }
   ];
   function defaultModel(provider, role) {
     if (provider === "claude")
       return DEFAULT_MODELS[role];
     if (provider === "openrouter")
-      return role === "builders" ? "nousresearch/hermes-4-70b" : "nousresearch/hermes-4-405b";
+      return OPENROUTER_MODEL;
     if (provider === "hermes")
       return "hermes-agent";
     return "";
@@ -2808,6 +2928,28 @@ State that objection fairly in two or three sentences, and say how the plan answ
       "Write nothing before the title or after the last section."
     ]);
   }
+  function namePrompt(brief) {
+    const titles = contextBlocks(brief.context).map((c) => c.title);
+    return [
+      "Name a session of " + PURPOSE + ", so it can be told apart from other sessions in a list.",
+      "",
+      "The feature request:",
+      quoted(brief.feature),
+      ""
+    ].concat(brief.project ? ["The project: " + brief.project.name, ""] : [], titles.length ? ["The context it comes with: " + listAnd(titles) + ".", ""] : [], [
+      "Write a name of about ten words that says what the feature is and what it's for, specific enough to identify this session among others for the same project. Write it in the same language as the feature request.",
+      "",
+      "Answer with the name alone, on one line, without quotes, Markdown or a full stop. Don't use any tools."
+    ]).join(`
+`);
+  }
+  function sessionName(text) {
+    const line = stripThinking(text).split(`
+`).map((l) => l.trim()).filter(Boolean)[0] || "";
+    const words = cleanInline(line.replace(/^#{1,6}[ \t]+/, "").replace(/^(session )?(name|title)\s*:\s*/i, "")).replace(/^["'\u201C\u2018]+|["'\u201D\u2019]+$/g, "").replace(/[.\u3002]+$/, "").split(/\s+/).filter(Boolean);
+    const name = words.slice(0, 16).join(" ");
+    return name.length > 140 ? name.slice(0, 139).trimEnd() + "…" : name;
+  }
   function questionPrompt(c, L, s, words, clipLen, ctxLen, opts) {
     const local = inProject(s.brief, opts), note = exploreNote("question", s.brief, opts);
     const rev = s.revision;
@@ -3407,6 +3549,8 @@ If your plan ends with a Dissent section, keep it as the last section.`
     checkPrompt,
     finalPrompt,
     fitPrompt,
+    namePrompt,
+    sessionName,
     questionPrompt,
     amendPrompt,
     parseQuestions,
@@ -3481,6 +3625,7 @@ var Providers = function(Core2) {
       throw { code: Core2.httpErrorCode(res.status, detail), message: detail, status: res.status };
     }
     let raw = "", reasoning = "", finish = null, served = req.model, failure = null, done = false, traced = false;
+    let usage = null;
     const onData = (data) => {
       if (data === "[DONE]") {
         done = true;
@@ -3499,6 +3644,12 @@ var Providers = function(Core2) {
       }
       if (obj && typeof obj.model === "string" && obj.model)
         served = obj.model;
+      const u = obj && obj.usage;
+      if (u && typeof u === "object" && (typeof u.prompt_tokens === "number" || typeof u.completion_tokens === "number")) {
+        usage = { turns: 1, inputTokens: Number(u.prompt_tokens) || 0, outputTokens: Number(u.completion_tokens) || 0 };
+        if (typeof u.cost === "number")
+          usage.costUsd = u.cost;
+      }
       const choice = obj && obj.choices && obj.choices[0];
       if (!choice)
         return;
@@ -3525,6 +3676,8 @@ var Providers = function(Core2) {
 `);
       if (thinking && req.onTrace)
         req.onTrace("thinking", { text: thinking });
+      if (usage && req.onTrace)
+        req.onTrace("usage", usage);
     };
     const type = res.headers && res.headers.get && res.headers.get("content-type") || "";
     if (!res.body || !res.body.getReader || /application\/json/i.test(type)) {
@@ -3563,14 +3716,14 @@ var Providers = function(Core2) {
       throw { code: "empty_completion", message: "The answer was empty." };
     return { text, truncated: finish === "length", served };
   }
-  async function claudeCode(req) {
+  async function localAgent(req) {
     const signal = req.signal;
     let res;
     try {
       res = await fetch(req.url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: req.prompt, model: req.model || "", cwd: req.cwd }),
+        body: JSON.stringify({ provider: req.provider, prompt: req.prompt, model: req.model || "", cwd: req.cwd, key: req.key || "", url: req.endpoint || "" }),
         signal
       });
     } catch (e) {
@@ -3623,6 +3776,8 @@ var Providers = function(Core2) {
         trace("tool", { id: d.id, name: d.tool, detail: d.detail, input: d.input });
       } else if (ev.event === "tool_result")
         trace("tool_result", { id: d.id, content: d.content, error: d.error });
+      else if (ev.event === "usage")
+        trace("usage", d);
       else if (ev.event === "done")
         final = d;
       else if (ev.event === "error")
@@ -3646,12 +3801,6 @@ var Providers = function(Core2) {
       throw { code: "empty_completion", message: "The answer was empty." };
     return { text: out, truncated: !!final.truncated, served: final.model || served };
   }
-  function openRouterHeaders() {
-    const h = { "X-Title": "Quorum" };
-    if (typeof location !== "undefined" && /^https?:$/.test(location.protocol))
-      h["HTTP-Referer"] = location.origin;
-    return h;
-  }
   async function run(agent, prompt, o) {
     const cfg = o.config || { keys: {}, urls: {} };
     switch (agent.provider) {
@@ -3670,29 +3819,24 @@ var Providers = function(Core2) {
         return { text: String(res.text || ""), truncated: !!res.truncated, served: res.modelTierApplied || agent.model };
       }
       case "claude-code":
+      case "openrouter":
+      case "custom":
         if (!cfg.local)
           throw { code: "unreachable", message: "Quorum's local server isn't running." };
         if (!o.cwd)
           throw { code: "project_missing", message: "No project folder." };
-        return claudeCode({
-          url: joinUrl(cfg.local, "api/claude-code"),
+        if (agent.provider === "openrouter" && !cfg.keys.openrouter)
+          throw { code: "missing_key", message: "No OpenRouter API key." };
+        if (agent.provider === "custom" && !cfg.urls.custom)
+          throw { code: "not_found", message: "No address for the endpoint." };
+        return localAgent({
+          url: joinUrl(cfg.local, "api/agent"),
+          provider: agent.provider,
           model: agent.model,
           prompt,
           cwd: o.cwd,
-          signal: o.signal,
-          onText: o.onText,
-          onActivity: o.onActivity,
-          onTrace: o.onTrace
-        });
-      case "openrouter":
-        if (!cfg.keys.openrouter)
-          throw { code: "missing_key", message: "No OpenRouter API key." };
-        return streamChat({
-          url: "https://openrouter.ai/api/v1/chat/completions",
-          key: cfg.keys.openrouter,
-          model: agent.model,
-          prompt,
-          headers: openRouterHeaders(),
+          key: agent.provider === "claude-code" ? "" : cfg.keys[agent.provider],
+          endpoint: agent.provider === "custom" ? cfg.urls.custom : "",
           signal: o.signal,
           onText: o.onText,
           onActivity: o.onActivity,
@@ -3711,24 +3855,13 @@ var Providers = function(Core2) {
           onActivity: o.onActivity,
           onTrace: o.onTrace
         });
-      case "custom":
-        if (!cfg.urls.custom)
-          throw { code: "not_found", message: "No address for the endpoint." };
-        return streamChat({
-          url: joinUrl(cfg.urls.custom, "chat/completions"),
-          key: cfg.keys.custom,
-          model: agent.model,
-          prompt,
-          signal: o.signal,
-          onText: o.onText,
-          onActivity: o.onActivity,
-          onTrace: o.onTrace
-        });
       default:
         throw { code: "bad_request", message: "Unknown provider." };
     }
   }
   async function listModels(provider, cfg) {
+    if (provider === "custom")
+      return localModels(cfg);
     const url = provider === "openrouter" ? "https://openrouter.ai/api/v1/models" : joinUrl(provider === "hermes" ? cfg.urls.hermes || Core2.PROVIDERS.hermes.defaultUrl : cfg.urls.custom, "models");
     const key = provider === "openrouter" ? "" : cfg.keys[provider];
     let res;
@@ -3750,6 +3883,31 @@ var Providers = function(Core2) {
     }
     const list = Array.isArray(data) ? data : Array.isArray(data && data.data) ? data.data : [];
     return list.filter((m) => m && typeof m.id === "string").map((m) => ({ id: m.id, name: typeof m.name === "string" ? m.name : "" }));
+  }
+  async function localModels(cfg) {
+    if (!cfg.local)
+      throw { code: "unreachable", message: "Quorum's local server isn't running." };
+    let res;
+    try {
+      res = await fetch(joinUrl(cfg.local, "api/models"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: cfg.urls.custom || "", key: cfg.keys.custom || "" })
+      });
+    } catch (e) {
+      throw { code: "unreachable", message: String(e && e.message || e) };
+    }
+    let body = null;
+    try {
+      body = await res.json();
+    } catch (_) {
+      body = null;
+    }
+    if (!res.ok || !body || !Array.isArray(body.models)) {
+      const err = body && body.error ? body.error : {};
+      throw { code: typeof err.code === "string" ? err.code : "upstream_error", message: String(err.message || "") };
+    }
+    return body.models;
   }
   return { run, listModels, streamChat, joinUrl };
 }(Core);
@@ -3851,6 +4009,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
     auth_failed: { kind: "retry", msg: "{provider} rejected the API key. Check it under Providers, then retry.", short: "{provider} rejected the API key." },
     no_credits: { kind: "retry", msg: "{provider} says the account is out of credits. Add credits, then retry.", short: "The {provider} account is out of credits." },
     bad_model: { kind: "retry", msg: "{provider} didn't accept the model name. Check it under Agents, then retry.", short: "{provider} didn't accept the model name." },
+    no_tools: { kind: "retry", msg: "The model can't use tools on {provider}, and every seat there works as an agent. Choose a model that supports tool calling under Agents, then retry.", short: "The model can't use tools on {provider}." },
     not_found: { kind: "retry", msg: "{provider} answered “not found”. Check the address under Providers, which usually ends in /v1, and the model name, then retry.", short: "{provider} answered “not found”." },
     unreachable: { kind: "retry", msg: "Couldn't reach {provider}. {hint}", short: "Couldn't reach {provider}." },
     bad_request: { kind: "retry", msg: "{provider} rejected the request{detail}. Check the model and provider settings, then retry.", short: "{provider} rejected the request." },
@@ -3872,9 +4031,11 @@ Files are stored in S3, and the Notifications module already sends email.` }
       return "Check that hermes gateway is running" + (origin ? " and that API_SERVER_CORS_ORIGINS includes " + origin : ", and open Quorum from a local web server so Hermes can allow it") + ", then retry.";
     }
     if (provider === "custom")
-      return "Check the address, and that the service accepts requests from this page, then retry.";
+      return "Check the address, and that Quorum's server, which bun start runs, is still running and can reach it, then retry.";
     if (provider === "claude-code")
       return "Check that Quorum's server, which bun start runs, is still running, then retry.";
+    if (provider === "openrouter")
+      return "Check your internet connection, and that Quorum's server, which bun start runs, is still running, then retry.";
     return "Check your internet connection, then retry.";
   }
   function errText(code, seat, field) {
@@ -3917,6 +4078,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
     secVote: $("sec-vote"),
     secPlan: $("sec-plan"),
     motionQuote: $("motionQuote"),
+    sessionName: $("sessionName"),
     propCount: $("propCount"),
     propPane: $("propPane"),
     propByline: $("propByline"),
@@ -3954,7 +4116,19 @@ Files are stored in S3, and the Notifications module already sends email.` }
     projectDirs: $("projectDirs"),
     motionProject: $("motionProject"),
     statusClaudeCode: $("status-claude-code"),
-    sessions: $("sessions"),
+    openSettings: $("openSettings"),
+    openHistory: $("openHistory"),
+    settingsBadge: $("settingsBadge"),
+    historyBadge: $("historyBadge"),
+    settingsDrawer: $("settingsDrawer"),
+    settingsTitle: $("settingsTitle"),
+    settingsNote: $("settingsNote"),
+    historyDrawer: $("historyDrawer"),
+    historyTitle: $("historyTitle"),
+    agentsSummary: $("agentsSummary"),
+    changeAgents: $("changeAgents"),
+    railUsage: $("railUsage"),
+    railUsageList: $("railUsageList"),
     sessionsStatus: $("sessionsStatus"),
     sessionsIntro: $("sessionsIntro"),
     sessionList: $("sessionList"),
@@ -4056,6 +4230,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
     round: 1,
     past: [],
     sessionId: null,
+    name: "",
     agents: Core2.normalizeAgents(null, INSIDE),
     seats: {},
     revealed: { proposals: false, questions: false, council: false, vote: false, review: false, plan: false },
@@ -4072,6 +4247,8 @@ Files are stored in S3, and the Notifications module already sends email.` }
   let sampleFn = null;
   let sampleState = "pending";
   let downloadsNS = null;
+  let nameCtl = null;
+  let nameUsage = null;
   let clockTimer = 0;
   function freshSeat() {
     return { status: "idle", text: "", error: null, truncated: false, ctl: null, agent: null, served: "", activity: "", skipped: false };
@@ -4148,15 +4325,17 @@ Files are stored in S3, and the Notifications module already sends email.` }
       if (INSIDE) {
         return { message: PROVIDERS[a.provider].label + " only works when Quorum is open outside Claude, because pages published on Claude can't reach other services. Choose Claude for " + who + ", or open the downloaded file.", focus: providerSelects[role] };
       }
-      if (a.provider === "claude-code") {
+      if (PROVIDERS[a.provider].local) {
+        const label = a.provider === "custom" ? "Your endpoint" : PROVIDERS[a.provider].label;
         if (!local)
-          return { message: "Claude Code runs through Quorum's local server. Start it with bun start and open Quorum at the address it prints, or choose another provider for " + who + ".", focus: providerSelects[role] };
-        if (!local.claudeCode.available)
+          return { message: label + " runs through Quorum's local server. Start it with bun start and open Quorum at the address it prints, or choose another provider for " + who + ".", focus: providerSelects[role] };
+        if (a.provider === "claude-code" && !local.claudeCode.available)
           return { message: "Quorum's server couldn't find Claude Code. Install it, or restart the server with QUORUM_CLAUDE_BIN set to its path, or choose another provider for " + who + ".", focus: providerSelects[role], openProviders: true };
         if (!project) {
-          return resuming ? { message: "This session started without a project folder, so Claude Code can't join it. Choose another provider for " + who + ", or convene again.", focus: providerSelects[role] } : { message: "Choose the project folder for Claude Code to work in.", focus: els.projectPath, project: true };
+          return resuming ? { message: "This session started without a project folder, so " + Core2.midName(label).replace(/^Your/, "your") + " can't join it. Choose another provider for " + who + ", or convene again.", focus: providerSelects[role] } : { message: "Choose the project folder for the agents to work in.", focus: els.projectPath, project: true };
         }
-        continue;
+        if (a.provider === "claude-code")
+          continue;
       }
       if (!a.model)
         return { message: "Enter a model for " + who + ".", focus: modelFields[role] };
@@ -4170,8 +4349,10 @@ Files are stored in S3, and the Notifications module already sends email.` }
     return null;
   }
   function showAgentsNote(text) {
-    els.agentsNote.textContent = text;
-    els.agentsNote.hidden = !text;
+    [els.agentsNote, els.settingsNote].forEach((el) => {
+      el.textContent = text;
+      el.hidden = !text;
+    });
   }
   function showAgentsProblem(problem) {
     if (problem.project) {
@@ -4180,8 +4361,13 @@ Files are stored in S3, and the Notifications module already sends email.` }
     } else {
       showAgentsNote(problem.message);
     }
+    revealProblem(problem);
+  }
+  function revealProblem(problem) {
     if (problem.openProviders)
       els.providers.open = true;
+    if (problem.focus && els.settingsDrawer.contains(problem.focus))
+      showDrawer("settings", document.activeElement);
     if (problem.focus)
       problem.focus.focus();
   }
@@ -4298,6 +4484,8 @@ Files are stored in S3, and the Notifications module already sends email.` }
     S.sel = { proposals: "A", questions: "A", council: "advocate", review: "scaling" };
     S.clock = { startedAt: 0, accumulated: 0 };
     S.convenedAt = Date.now();
+    S.name = "";
+    nameUsage = null;
     saveSession();
     startClock();
     render();
@@ -4305,7 +4493,48 @@ Files are stored in S3, and the Notifications module already sends email.` }
     await startSaving();
     if (tok !== S.token)
       return;
+    nameSession();
     run(tok).catch(onRunCrash);
+  }
+  async function nameSession() {
+    const session = S.session, b = brief(), agent = S.agents.chair;
+    const ctl = new AbortController;
+    if (nameCtl)
+      nameCtl.abort();
+    nameCtl = ctl;
+    const counted = { agent: { provider: agent.provider, model: agent.model }, served: "", usage: null, status: "running" };
+    try {
+      const res = await Providers.run(agent, Core2.namePrompt(b), {
+        sample: sampleFn,
+        config: credsSnapshot(),
+        cwd: b.project ? b.project.path : "",
+        signal: ctl.signal,
+        onTrace: (kind, d) => {
+          if (session !== S.session)
+            return;
+          if (kind === "start" && typeof d.model === "string")
+            counted.served = d.model;
+          if (kind === "usage")
+            counted.usage = d;
+          nameUsage = counted;
+          schedule();
+        }
+      });
+      const name = Core2.sessionName(res.text);
+      if (!name || session !== S.session || ctl.signal.aborted)
+        return;
+      S.name = name;
+      saveSession();
+      save((id) => api("PATCH", "sessions/" + id, { title: name }));
+      save(() => refreshSessions());
+      schedule();
+    } catch (_) {} finally {
+      if (nameCtl === ctl)
+        nameCtl = null;
+      counted.status = "done";
+      if (nameUsage === counted)
+        schedule();
+    }
   }
   async function run(tok) {
     const graph = Core2.graphFor(brief());
@@ -4470,6 +4699,10 @@ Files are stored in S3, and the Notifications module already sends email.` }
     schedule();
   }
   function abortAll() {
+    if (nameCtl) {
+      nameCtl.abort();
+      nameCtl = null;
+    }
     ALL_IDS.forEach((id) => {
       const seat = S.seats[id];
       if (seat && seat.ctl) {
@@ -4534,6 +4767,8 @@ Files are stored in S3, and the Notifications module already sends email.` }
     render();
     if (hadFocus)
       els.convene.focus();
+    if (!S.name)
+      nameSession();
     run(tok).catch(onRunCrash);
   }
   function onRunCrash(err) {
@@ -4566,7 +4801,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
       if (d)
         seats[id] = { text: d.text, truncated: d.truncated, agent: d.agent, served: d.served };
     });
-    store.set(SESSION_KEY, JSON.stringify({ v: 1, brief: b, revision: handedOff("revision"), agents: S.agents, elapsed: elapsed(), seats }));
+    store.set(SESSION_KEY, JSON.stringify({ v: 1, brief: b, revision: handedOff("revision"), name: S.name, agents: S.agents, elapsed: elapsed(), seats }));
   }
   function agentFrom(a) {
     return a && typeof a === "object" && PROVIDERS[a.provider] && typeof a.model === "string" ? { provider: a.provider, model: a.model } : null;
@@ -4622,6 +4857,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
     S.round = rev ? rev.round : 1;
     S.past = [];
     S.agents = Core2.normalizeAgents(saved2.agents, INSIDE);
+    S.name = typeof saved2.name === "string" ? Core2.sessionName(saved2.name) : "";
     resetSeats();
     resetConvos(false);
     ALL_IDS.forEach((id) => {
@@ -4673,20 +4909,18 @@ Files are stored in S3, and the Notifications module already sends email.` }
       hints.push("Frontier is Claude's most capable model and thinks longest, so its seats can take a few minutes.");
     else if (claude.length && claude.every((t) => t === "quick"))
       hints.push("Fast is Claude's quickest, cheapest model.");
-    if (list.some((a) => a.provider === "claude-code"))
-      hints.push("Claude Code explores the project before it writes, so its seats can take a few minutes.");
+    const explorers = ["claude-code", "openrouter", "custom"].filter((p) => list.some((a) => a.provider === p));
+    if (explorers.length) {
+      hints.push("Agents on " + Core2.listAnd(explorers.map((p) => p === "custom" ? "your endpoint" : PROVIDERS[p].label)) + " explore the project before they write, so their seats can take a few minutes.");
+    }
     if (list.some((a) => a.provider === "openrouter"))
-      hints.push("OpenRouter bills your account for each request.");
+      hints.push("OpenRouter bills your account for each request, and an agent makes several as it explores.");
     if (list.some((a) => a.provider === "hermes"))
       hints.push("Hermes Agent may use its tools first, so its seats can take longer.");
     if (els.questionsOn.checked)
       hints.push("The council's questions add up to twelve requests: each councilor's questions on each proposal, and each builder's answers.");
     if (els.reviewOn.checked)
       hints.push("The final review adds three requests: two reviews and the Chair's revision.");
-    const blind = ["openrouter", "custom"].filter((p) => list.some((a) => a.provider === p));
-    if (local && proj.info && blind.length) {
-      hints.push(Core2.listAnd(blind.map((p) => p === "custom" ? "your endpoint" : PROVIDERS[p].label)).replace(/^y/, "Y") + " can't read the project folder, so " + (blind.length > 1 ? "their" : "its") + " seats work from the pasted context.");
-    }
     return hints.join(" ") || "Each role can run on a different provider and model.";
   }
   const creds = { keys: { openrouter: "", hermes: "", custom: "" }, urls: { hermes: "", custom: "" }, remember: { openrouter: false, hermes: false, custom: false } };
@@ -4797,9 +5031,14 @@ Files are stored in S3, and the Notifications module already sends email.` }
       Array.prototype.forEach.call(providerSelects[r.id].options, (opt) => {
         let usable = Core2.usableHere(opt.value, INSIDE);
         let why = INSIDE ? " (outside Claude only)" : " (inside claude.ai only)";
-        if (usable && PROVIDERS[opt.value].local && localState !== "pending" && !providerReady(opt.value)) {
-          usable = false;
-          why = local ? " (not installed)" : " (needs bun start)";
+        if (usable && PROVIDERS[opt.value].local && localState !== "pending") {
+          if (!local) {
+            usable = false;
+            why = " (needs bun start)";
+          } else if (opt.value === "claude-code" && !local.claudeCode.available) {
+            usable = false;
+            why = " (not installed)";
+          }
         }
         opt.disabled = !usable;
         const base = PROVIDERS[opt.value].label;
@@ -4844,7 +5083,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
     add(". Hermes answers with the model it's configured to use, and if it can read your project's files, the agents may check their proposals against the code.");
   }
   function writeProvidersIntro() {
-    els.providersIntro.textContent = INSIDE ? "Quorum is open inside Claude, so every agent runs on Claude. Pages published on Claude can't reach other services. To use OpenRouter, Hermes Agent or another endpoint, open Quorum on its own, from the downloaded file or your GitHub Pages site. To use Claude Code, run Quorum on your computer with bun start." : "Keys stay in this browser and are sent only to the service they belong to. Leave Remember off on a shared computer.";
+    els.providersIntro.textContent = INSIDE ? "Quorum is open inside Claude, so every agent runs on Claude. Pages published on Claude can't reach other services. To use Claude Code, OpenRouter or another endpoint, run Quorum on your computer with bun start. To use Hermes Agent, open Quorum on its own." : "Keys stay in this browser and are sent only to the service they belong to, through Quorum's server on this computer for OpenRouter and other endpoints. Leave Remember off on a shared computer.";
   }
   function providerReady(p) {
     if (p === "claude-code")
@@ -4866,6 +5105,8 @@ Files are stored in S3, and the Notifications module already sends email.` }
         text = text.charAt(0).toUpperCase() + text.slice(1);
     }
     setText(els.providersStatus, text);
+    const needs = !INSIDE && ["claude-code"].concat(EXTERNAL).some((p) => activeRoles(reviewing()).some((r) => providerSelects[r.id].value === p) && !providerReady(p));
+    toggle(els.settingsBadge, needs);
     renderClaudeCodeStatus();
   }
   function renderClaudeCodeStatus() {
@@ -5039,6 +5280,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
       b.disabled = running;
     });
     setText(els.settingsHint, settingsHint(currentAgents()));
+    setText(els.agentsSummary, agentsSummary());
     const tierNote = tierNoteText();
     toggle(els.tierNote, !!tierNote);
     setText(els.tierNote, tierNote);
@@ -5162,7 +5404,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
             return "Waiting for Claude. If you're asked to allow this page to use Claude, allow it to begin.";
           }
           if (nb === 0) {
-            return S.agents.builders.provider === "claude-code" ? "The builders are exploring the project and drafting their proposals." : "The builders are drafting their proposals.";
+            return PROVIDERS[S.agents.builders.provider].local ? "The builders are exploring the project and drafting their proposals." : "The builders are drafting their proposals.";
           }
           return "The builders are drafting. " + nb + " of 3 proposals are in.";
         }
@@ -5215,6 +5457,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
     });
     toggle(els.railStop, S.phase === "running");
     toggle(els.railConvo, S.phase !== "idle" && convoSteps().length > 0);
+    renderUsage();
     renderClock();
     renderSaveState();
   }
@@ -5227,6 +5470,12 @@ Files are stored in S3, and the Notifications module already sends email.` }
     toggle(els.secQuestions, S.revealed.questions);
     toggle(els.secPlan, S.revealed.plan);
     setText(els.motionQuote, brief().feature);
+    const named = S.phase !== "idle" && !!S.name;
+    toggle(els.sessionName, named);
+    setText(els.sessionName, named ? S.name : "");
+    const title = named ? S.name + " · Quorum" : "Quorum";
+    if (document.title !== title)
+      document.title = title;
     const input = roundInput(S.handoffs);
     toggle(els.motionRound, !!input);
     setText(els.motionRoundIntro, input ? "Round " + S.round + " revises the round " + (S.round - 1) + " plan with your input:" : "");
@@ -5262,7 +5511,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
   }
   function waitCopy(agent) {
     if (!agent || agent.provider !== "claude") {
-      return agent && agent.provider === "hermes" ? "Hermes Agent may use its tools first, so writing can take a few minutes to start." : agent && agent.provider === "claude-code" ? "Claude Code explores the project first, so writing can take a few minutes to start." : "Writing usually starts within a minute.";
+      return agent && agent.provider === "hermes" ? "Hermes Agent may use its tools first, so writing can take a few minutes to start." : agent && PROVIDERS[agent.provider].local ? "It explores the project first, so writing can take a few minutes to start." : "Writing usually starts within a minute.";
     }
     return agent.model === "quick" ? "Writing usually starts within a few seconds." : agent.model === "complex" ? "Frontier models think first, so writing can take a couple of minutes to start." : "Writing usually starts within a minute.";
   }
@@ -6058,7 +6307,8 @@ Files are stored in S3, and the Notifications module already sends email.` }
       return { html: "" };
     const on = i.git ? i.git.branch ? " on " + Core2.esc(i.git.branch) : i.git.detached ? " at " + Core2.esc(i.git.detached) : "" : "";
     const where = !i.git ? ". It isn't in a Git repository." : i.git.root === i.path ? ", a Git repository" + on + "." : ", in a Git repository" + on + ".";
-    return { html: "Found <strong>" + Core2.esc(i.name) + "</strong>" + where + (i.claudeMd ? " It has a CLAUDE.md, which Claude Code reads." : "") };
+    const guides = [i.claudeMd ? "a CLAUDE.md, which Claude Code reads" : "", i.agentsMd ? "an AGENTS.md, which agents on OpenRouter and other endpoints read" : ""].filter(Boolean);
+    return { html: "Found <strong>" + Core2.esc(i.name) + "</strong>" + where + (guides.length ? " It has " + guides.join(", and ") + "." : "") };
   }
   function renderProject() {
     toggle(els.project, !!local);
@@ -6131,6 +6381,8 @@ Files are stored in S3, and the Notifications module already sends email.` }
     save((id) => api("PUT", "sessions/" + id + "/rounds/" + round + "/" + h.from, { kind: h.kind, data: h.data }));
   }
   function sessionTitle() {
+    if (S.name)
+      return S.name;
     const plan = planHandoff() || handedOff("chair");
     const title = plan ? Core2.titleOf(plan.text) : "";
     return title || brief().feature.trim().split(`
@@ -6189,8 +6441,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
       o = await api("GET", "sessions/" + encodeURIComponent(id));
     } catch (e) {
       saved.listError = "That session couldn't be opened. " + e.message;
-      els.sessions.open = true;
-      render();
+      showDrawer("history");
       return;
     }
     const rounds = {};
@@ -6213,6 +6464,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
     resetSeats();
     resetConvos(true);
     S.sessionId = o.session.id;
+    S.name = o.session.title;
     saved.error = "";
     S.round = last;
     S.past = [];
@@ -6260,7 +6512,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
     els.reviewOn.checked = !!b.review;
     els.questionsOn.checked = !!b.questions;
     setSessionHash(S.sessionId);
-    els.sessions.open = false;
+    closeDrawer(false);
     render();
     scrollToSection(finished ? els.secPlan : els.secProposals);
   }
@@ -6283,11 +6535,14 @@ Files are stored in S3, and the Notifications module already sends email.` }
     return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
   function renderSessions() {
-    toggle(els.sessions, canSave());
+    toggle(els.openHistory, canSave());
     if (!canSave())
       return;
     const list = saved.list, running = S.phase === "running";
     const open = list.filter((x) => x.status !== "done").length;
+    const waiting = list.filter((x) => x.status !== "done" && x.id !== S.sessionId).length;
+    toggle(els.historyBadge, waiting > 0);
+    setHTML(els.historyBadge, waiting ? waiting + '<span class="visually-hidden"> unfinished ' + (waiting === 1 ? "session" : "sessions") + "</span>" : "");
     setText(els.sessionsStatus, !saved.listed ? "" : !list.length ? "None yet" : list.length + (list.length === 1 ? " session" : " sessions") + (open ? ", " + open + " unfinished" : ""));
     setText(els.sessionsIntro, saved.listError || "Each session is saved in " + local.sessions.file + " as it runs, so you can come back to it after closing this page or stopping the server.");
     els.sessionsIntro.classList.toggle("is-error", !!saved.listError);
@@ -6330,8 +6585,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
     const problem = checkAgents(agents, brief().project, true, !!brief().review);
     if (problem) {
       showReviseNote(problem.message);
-      if (problem.openProviders)
-        els.providers.open = true;
+      revealProblem(problem);
       return;
     }
     showReviseNote("");
@@ -6568,6 +6822,7 @@ Files are stored in S3, and the Notifications module already sends email.` }
   function openConvo(round, node, opener) {
     if (!S.seats[node])
       return;
+    closeDrawer(false);
     convos.view = { round, node };
     convos.opener = opener || null;
     toggle(els.convo, true);
@@ -6906,24 +7161,124 @@ Files are stored in S3, and the Notifications module already sends email.` }
     await saveText("council-conversations-" + fileBase() + ".md", head + body, btn);
   }
   function onConvoKey(e) {
+    holdFocus(e, els.convoPanel, els.convoTitle, closeConvo);
+  }
+  function holdFocus(e, panel, title, close) {
     if (e.key === "Escape") {
       e.preventDefault();
-      closeConvo();
+      close();
       return;
     }
     if (e.key !== "Tab")
       return;
-    const all = Array.prototype.slice.call(els.convoPanel.querySelectorAll("button, select, summary, [tabindex]")).filter((el) => el.tabIndex >= 0 && !el.disabled && !el.closest("[hidden]"));
+    const all = Array.prototype.slice.call(panel.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]")).filter((el) => el.tabIndex >= 0 && !el.disabled && !el.closest("[hidden]"));
     if (!all.length)
       return;
     const first = all[0], last = all[all.length - 1], at = document.activeElement;
-    if (e.shiftKey && (at === first || at === els.convoTitle)) {
+    if (e.shiftKey && (at === first || at === title)) {
       e.preventDefault();
       last.focus();
     } else if (!e.shiftKey && at === last) {
       e.preventDefault();
       first.focus();
     }
+  }
+  function fmtTokens(n) {
+    if (n < 1000)
+      return String(n);
+    if (n < 1e6)
+      return (n < 1e4 ? (n / 1000).toFixed(1) : String(Math.round(n / 1000))).replace(/\.0$/, "") + "k";
+    return (n / 1e6).toFixed(n < 1e7 ? 2 : 1).replace(/\.?0+$/, "") + "M";
+  }
+  function usageByAgent() {
+    const rows = {};
+    const runs = [];
+    Object.keys(convos.mem).forEach((k) => convos.mem[k].forEach((t) => runs.push(t)));
+    if (nameUsage)
+      runs.push(nameUsage);
+    runs.forEach((t) => {
+      if (!t.agent || !PROVIDERS[t.agent.provider])
+        return;
+      const model = t.served || t.agent.model, key = t.agent.provider + "\x00" + model;
+      const r = rows[key] || (rows[key] = {
+        label: Core2.agentLabel({ provider: t.agent.provider, model }, { customUrl: creds.urls.custom }),
+        input: 0,
+        output: 0,
+        cost: 0,
+        counted: false,
+        costed: false,
+        pending: false
+      });
+      const u = t.usage;
+      if (!u) {
+        if (t.status === "running")
+          r.pending = true;
+        return;
+      }
+      if (typeof u.inputTokens === "number" || typeof u.outputTokens === "number") {
+        r.input += u.inputTokens || 0;
+        r.output += u.outputTokens || 0;
+        r.counted = true;
+      }
+      if (typeof u.costUsd === "number") {
+        r.cost += u.costUsd;
+        r.costed = true;
+      }
+    });
+    return Object.keys(rows).map((k) => rows[k]);
+  }
+  function renderUsage() {
+    const rows = S.phase === "idle" ? [] : usageByAgent();
+    toggle(els.railUsage, rows.length > 0);
+    if (!rows.length)
+      return;
+    const money = (n) => "$" + n.toFixed(n < 1 ? 4 : 2);
+    const line = (who, r, total) => '<li class="rail-usage-row' + (total ? " is-total" : "") + '"><span class="rail-usage-who">' + Core2.esc(who) + '</span> <span class="rail-usage-n">' + (r.counted ? fmtTokens(r.input) + " in · " + fmtTokens(r.output) + " out" : r.pending ? "Counting…" : "Not reported") + (r.costed ? " · " + money(r.cost) : "") + "</span></li>";
+    const counted = rows.filter((r) => r.counted);
+    const sum = {
+      input: counted.reduce((n, r) => n + r.input, 0),
+      output: counted.reduce((n, r) => n + r.output, 0),
+      cost: rows.reduce((n, r) => n + r.cost, 0),
+      counted: counted.length > 0,
+      costed: rows.some((r) => r.costed),
+      pending: rows.some((r) => r.pending)
+    };
+    setHTML(els.railUsageList, rows.map((r) => line(r.label, r)).join("") + (rows.length > 1 ? line("Total", sum, true) : ""));
+  }
+  const DRAWERS = {
+    settings: { el: els.settingsDrawer, title: els.settingsTitle, button: els.openSettings },
+    history: { el: els.historyDrawer, title: els.historyTitle, button: els.openHistory }
+  };
+  let drawer = null;
+  function showDrawer(name, opener) {
+    if (drawer && drawer.name === name)
+      return;
+    closeDrawer(false);
+    closeConvo();
+    const d = DRAWERS[name];
+    drawer = { name, opener: opener || d.button };
+    toggle(d.el, true);
+    d.button.setAttribute("aria-expanded", "true");
+    document.documentElement.classList.add("is-drawer-open");
+    if (name === "history" && canSave())
+      refreshSessions();
+    render();
+    focusQuietly(d.title);
+  }
+  function closeDrawer(restore = true) {
+    if (!drawer)
+      return;
+    const d = DRAWERS[drawer.name], back = drawer.opener;
+    drawer = null;
+    toggle(d.el, false);
+    d.button.setAttribute("aria-expanded", "false");
+    document.documentElement.classList.remove("is-drawer-open");
+    if (restore && back && back.isConnected && !back.hidden)
+      focusQuietly(back);
+  }
+  function agentsSummary() {
+    const agents = currentAgents(), opts = { customUrl: creds.urls.custom };
+    return Core2.agentsSentence(agents, opts) + (reviewing() ? " The final review on " + Core2.agentLabel(agents.review, opts) + "." : "");
   }
   els.convene.addEventListener("click", () => {
     if (S.phase === "running") {
@@ -7218,6 +7573,18 @@ Files are stored in S3, and the Notifications module already sends email.` }
   els.convoClose.addEventListener("click", closeConvo);
   els.convoScrim.addEventListener("click", closeConvo);
   els.convo.addEventListener("keydown", onConvoKey);
+  els.openSettings.addEventListener("click", () => drawer && drawer.name === "settings" ? closeDrawer() : showDrawer("settings", els.openSettings));
+  els.openHistory.addEventListener("click", () => drawer && drawer.name === "history" ? closeDrawer() : showDrawer("history", els.openHistory));
+  els.changeAgents.addEventListener("click", () => showDrawer("settings", els.changeAgents));
+  Object.keys(DRAWERS).forEach((name) => {
+    const d = DRAWERS[name];
+    d.el.addEventListener("keydown", (e) => holdFocus(e, d.el.querySelector(".drawer-panel"), d.title, () => closeDrawer()));
+    d.el.addEventListener("click", (e) => {
+      if (e.target.closest("[data-close]"))
+        closeDrawer();
+    });
+    d.button.setAttribute("aria-expanded", "false");
+  });
   els.convoStep.addEventListener("change", () => {
     const m = /^(\d+):(.+)$/.exec(els.convoStep.value);
     if (!m || !convos.view)
@@ -7320,8 +7687,6 @@ Files are stored in S3, and the Notifications module already sends email.` }
     refreshSessions().then(() => {
       if (m)
         openSession(m[1]);
-      else if (S.phase === "idle" && saved.list.some((x) => x.status !== "done"))
-        els.sessions.open = true;
       render();
     });
   });

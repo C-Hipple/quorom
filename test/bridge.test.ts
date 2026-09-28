@@ -6,8 +6,11 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { claudeArgs, createTranslator, errorCode, folderInfo, MAX_TOOL_OUTPUT, toolOutput, validModel, type FolderInfo } from "../bridge";
+import { folderInfo, type FolderInfo } from "../bridge";
+import { claudeArgs, createTranslator, errorCode, validModel } from "../harness/claude-code";
+import { MAX_TOOL_OUTPUT, toolOutput, type Harness } from "../harness/harness";
 import { startServer, type QuorumServer, type ServerOptions } from "../serve";
+import { fakeOpenAI, seatAgent } from "./fake-openai";
 
 const FAKE = { command: process.execPath, args: [path.join(import.meta.dir, "fake-claude.ts")] };
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -20,6 +23,7 @@ function tmpProject() {
   fs.mkdirSync(path.join(dir, ".git"));
   fs.writeFileSync(path.join(dir, ".git", "HEAD"), "ref: refs/heads/feature/login\n");
   fs.writeFileSync(path.join(dir, "CLAUDE.md"), "# Notes\n");
+  fs.writeFileSync(path.join(dir, "AGENTS.md"), "# How the app is built\nOne file, src/app.js.\n");
   fs.writeFileSync(path.join(dir, "src", "app.js"), "// app\n");
   return fs.realpathSync(dir);
 }
@@ -73,8 +77,9 @@ function events(body: string): { event: string, data: any }[] {
   });
 }
 
+// A seat for an agent on the server, on Claude Code unless the body names another provider.
 const post = (server: QuorumServer, body: unknown, headers?: Record<string, string>) => request(server, {
-  method: "POST", path: "/api/claude-code", body,
+  method: "POST", path: "/api/agent", body: body && typeof body === "object" ? Object.assign({ provider: "claude-code" }, body) : body,
   headers: Object.assign({ "Content-Type": "application/json", Origin: "http://localhost:" + server.port }, headers || {}),
 });
 
@@ -115,6 +120,9 @@ test("stream-json becomes the page's events", async () => {
   ] } });
   tr.feed({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t9", content: "from a subagent" }] }, parent_tool_use_id: "t8" });
   tr.feed({ type: "stream_event", event: { type: "message_start" } }, );
+  // Each message says what it used as it streams, so the page can count while the run goes on.
+  tr.feed({ type: "stream_event", event: { type: "message_start", message: { usage: { input_tokens: 10, cache_read_input_tokens: 90, output_tokens: 1 } } } });
+  tr.feed({ type: "stream_event", event: { type: "message_delta", usage: { output_tokens: 25 } } });
   tr.feed({
     type: "result", subtype: "success", is_error: false, stop_reason: "max_tokens", result: "# Plan",
     num_turns: 3, total_cost_usd: 0.5, duration_ms: 9000, usage: { input_tokens: 10, cache_creation_input_tokens: 5, cache_read_input_tokens: 100, output_tokens: 40 },
@@ -131,6 +139,7 @@ test("stream-json becomes the page's events", async () => {
     ["tool_result", { id: "t2", content: "src/a.js:3: TODO\n[image]", error: false }],
     ["tool_result", { id: "t3", content: "Permission denied", error: true }],
     ["turn", {}],
+    ["turn", {}], ["usage", { turns: 1, inputTokens: 100, outputTokens: 1 }], ["usage", { turns: 1, inputTokens: 100, outputTokens: 25 }],
     ["done", { text: "# Plan", truncated: true, model: "claude-opus-5-5", usage: { turns: 3, costUsd: 0.5, durationMs: 9000, inputTokens: 115, outputTokens: 40 } }],
   ]);
   assert.ok(tr.finished());
@@ -162,9 +171,11 @@ test("a folder lists its subfolders, its Git branch and whether it has a CLAUDE.
   assert.deepStrictEqual(info.dirs, [{ name: "docs", path: path.join(project, "docs") }, { name: "src", path: path.join(project, "src") }], "hidden folders are left out");
   assert.deepStrictEqual(info.git, { root: project, branch: "feature/login", detached: null });
   assert.strictEqual(info.claudeMd, true);
+  assert.strictEqual(info.agentsMd, true);
   const sub = folderInfo(path.join(project, "src")) as FolderInfo;
   assert.strictEqual(sub.git!.root, project, "a subfolder belongs to the repository above it");
   assert.strictEqual(sub.claudeMd, false);
+  assert.strictEqual(sub.agentsMd, false);
   assert.strictEqual(folderInfo(path.join(project, "nope")), null);
   assert.strictEqual(folderInfo(path.join(project, "src", "app.js")), null, "a file isn't a folder");
   assert.strictEqual(folderInfo("~")!.path, os.homedir());
@@ -251,8 +262,8 @@ test("closing the request stops Claude Code", async () => {
   const p2 = s2.port;
   let pid = 0;
   await request(s2, {
-    method: "POST", path: "/api/claude-code", allowAbort: true,
-    body: { prompt: "FAKE:slow", cwd: project },
+    method: "POST", path: "/api/agent", allowAbort: true,
+    body: { provider: "claude-code", prompt: "FAKE:slow", cwd: project },
     headers: { "Content-Type": "application/json", Host: "localhost:" + p2 },
     onData: (body, req) => {
       if (/Starting/.test(body) && !pid) {
@@ -273,12 +284,85 @@ test("without Claude Code, the page is told it isn't available", async () => {
   assert.deepStrictEqual(o.claudeCode, { available: false, version: null });
   assert.strictEqual(o.project, null);
   const r = await request(s3, {
-    method: "POST", path: "/api/claude-code", body: { prompt: "x", cwd: project },
+    method: "POST", path: "/api/agent", body: { provider: "claude-code", prompt: "x", cwd: project },
     headers: { "Content-Type": "application/json", Host: "localhost:" + s3.port },
   });
   assert.strictEqual(r.status, 503);
   assert.strictEqual(JSON.parse(r.body).error.code, "claude_code_missing");
   await s3.stop();
+});
+
+test("OpenRouter and other endpoints run on Quorum's agent loop inside the project folder", async () => {
+  const service = fakeOpenAI(seatAgent);
+  const srv = await listen({ project, openrouter: service.url });
+  const r = await post(srv, { provider: "openrouter", key: " sk-or-test ", model: "z-ai/glm-5.3", prompt: "You are The Pragmatist. Propose.", cwd: project });
+  assert.strictEqual(r.status, 200);
+  const evs = events(r.body);
+  assert.deepStrictEqual(evs.map(e => e.event).filter(e => e !== "text"), ["start", "turn", "block", "block", "usage", "tool", "tool_result", "turn", "block", "done"]);
+  assert.deepStrictEqual(evs[0].data, { model: "z-ai/glm-5.3", tools: ["Read", "Grep", "Glob"] });
+  const read = evs.find(e => e.event === "tool_result")!.data;
+  assert.deepStrictEqual(read, { id: "call_1_0", content: "     1\t// app", error: false }, "the file, read in the project");
+  const done = evs[evs.length - 1].data;
+  assert.ok(done.text.startsWith("# Pragmatist Route") && done.text.includes("Ran in " + project), done.text);
+  assert.strictEqual(done.model, "z-ai/glm-5.3");
+  assert.strictEqual(done.usage.turns, 2);
+  const [first] = service.requests;
+  assert.strictEqual(first.headers.get("authorization"), "Bearer sk-or-test");
+  assert.strictEqual(first.headers.get("x-title"), "Quorum");
+  assert.deepStrictEqual(first.body.usage, { include: true });
+  assert.ok(first.body.messages[0].content.includes("=== AGENTS.md ===\n# How the app is built\nOne file, src/app.js.\n=== End of AGENTS.md ==="), "the project's AGENTS.md");
+
+  const custom = await post(srv, { provider: "custom", url: service.url, key: "", model: "llama3.1:8b", prompt: "You are the Chair. Plan.", cwd: project });
+  assert.ok(events(custom.body).pop()!.data.text.startsWith("# The Plan"));
+  const last = service.requests[service.requests.length - 1];
+  assert.strictEqual(last.body.model, "llama3.1:8b");
+  assert.strictEqual(last.headers.get("authorization"), null, "no key, no Authorization");
+  assert.strictEqual(last.body.usage, undefined, "OpenRouter's own fields only go to OpenRouter");
+
+  const turnedAway = async (body: Record<string, unknown>, status: number, code: string) => {
+    const x = await post(srv, Object.assign({ prompt: "x", cwd: project, model: "m" }, body));
+    assert.strictEqual(x.status, status, JSON.stringify(body));
+    assert.strictEqual(JSON.parse(x.body).error.code, code, JSON.stringify(body));
+  };
+  await turnedAway({ provider: "hermes" }, 400, "bad_request");
+  await turnedAway({ provider: "toString" }, 400, "bad_request");
+  await turnedAway({ provider: "openrouter", key: "" }, 400, "missing_key");
+  await turnedAway({ provider: "openrouter", key: "k", model: "" }, 400, "bad_model");
+  await turnedAway({ provider: "custom", url: "file:///etc/passwd" }, 400, "not_found");
+  await turnedAway({ provider: "custom", url: service.url, cwd: path.join(project, "gone") }, 404, "project_missing");
+
+  const models = await request(srv, { method: "POST", path: "/api/models", body: { url: service.url }, headers: { "Content-Type": "application/json" } });
+  assert.deepStrictEqual(JSON.parse(models.body), { models: [{ id: "glm-test", name: "" }, { id: "other-model", name: "Other" }] });
+  const gone = await request(srv, { method: "POST", path: "/api/models", body: { url: "http://127.0.0.1:9/v1" }, headers: { "Content-Type": "application/json" } });
+  assert.strictEqual(JSON.parse(gone.body).error.code, "unreachable");
+  await srv.stop();
+  await service.stop();
+});
+
+test("a second server can't share a port with the first", async () => {
+  const first = await listen();
+  assert.throws(() => startServer({ port: first.port }), (e: NodeJS.ErrnoException) => e.code === "EADDRINUSE");
+  const r = await request(first, { path: "/api/local" });
+  assert.strictEqual(r.status, 200, "the first is unaffected");
+  await first.stop();
+});
+
+test("a harness can be swapped for another without the page knowing", async () => {
+  const asked: string[] = [];
+  const stub: Harness = {
+    checkModel: () => undefined,
+    async run(task, emit) {
+      asked.push(task.model + " in " + task.cwd + " with " + (task.endpoint && task.endpoint.key));
+      emit("start", { model: "stub", tools: [] });
+      emit("done", { text: "# Stubbed", truncated: false, model: "stub" });
+      emit("text", { delta: "after the end" });
+    },
+  };
+  const srv = await listen({ project, harnesses: { openrouter: stub } });
+  const evs = events((await post(srv, { provider: "openrouter", key: "k", model: "anything", prompt: "x", cwd: project })).body);
+  assert.deepStrictEqual(evs.map(e => e.event), ["start", "done"], "nothing is sent after the end");
+  assert.deepStrictEqual(asked, ["anything in " + project + " with k"]);
+  await srv.stop();
 });
 
 const dbFile = path.join(project, "data", "quorum.db");

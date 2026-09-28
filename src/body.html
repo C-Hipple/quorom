@@ -76,11 +76,31 @@
         <li id="stageReview" hidden><button type="button" class="stage-btn" data-stage="review" data-target="sec-review" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">4</span>Final review</span><span class="stage-state">Waiting</span></button></li>
         <li><button type="button" class="stage-btn" data-stage="plan" data-target="sec-plan" aria-disabled="true" tabindex="-1"><span class="stage-mark" aria-hidden="true"></span><span class="stage-name"><span class="stage-n">4</span>Final plan</span><span class="stage-state">Waiting</span></button></li>
       </ol>
+      <div class="rail-usage" id="railUsage" hidden>
+        <p class="rail-usage-title" id="railUsageTitle">Tokens used</p>
+        <ul class="rail-usage-list" id="railUsageList" aria-labelledby="railUsageTitle"></ul>
+      </div>
       <button type="button" class="rail-convo" id="railConvo" hidden>Every agent’s conversation</button>
       <div class="rail-foot">
-        <p class="clock" id="clock"></p>
-        <p class="save-state" id="saveState" role="status" hidden></p>
-        <button type="button" class="btn btn-rail" id="railStop" hidden>Stop</button>
+        <div class="rail-now">
+          <div class="rail-time">
+            <p class="clock" id="clock"></p>
+            <p class="save-state" id="saveState" role="status" hidden></p>
+          </div>
+          <button type="button" class="btn btn-rail" id="railStop" hidden>Stop</button>
+        </div>
+        <div class="rail-tools">
+          <button type="button" class="rail-tool" id="openSettings" aria-haspopup="dialog" aria-controls="settingsDrawer">
+            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M3 5h8M15 5h2M3 10h2M9 10h8M3 15h10"/><circle cx="13" cy="5" r="2"/><circle cx="7" cy="10" r="2"/><circle cx="15" cy="15" r="2"/></svg>
+            <span>Settings</span>
+            <span class="rail-badge is-dot" id="settingsBadge" hidden><span class="visually-hidden">, a provider needs setting up</span></span>
+          </button>
+          <button type="button" class="rail-tool" id="openHistory" aria-haspopup="dialog" aria-controls="historyDrawer" hidden>
+            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l2.5 2"/></svg>
+            <span>History</span>
+            <span class="rail-badge" id="historyBadge" hidden></span>
+          </button>
+        </div>
       </div>
     </div>
   </aside>
@@ -89,13 +109,6 @@
     <section class="motion" aria-labelledby="motion-title">
       <h1 class="motion-title" id="motion-title">Put a feature before the council</h1>
       <p class="lede">Describe a feature for an existing software project, then paste in whatever the council should work from, like product requirements, how the system works today, constraints or relevant code. Three builders propose implementations, the council votes, and the Chair writes the implementation plan.</p>
-      <details class="providers sessions" id="sessions" hidden>
-        <summary><span class="providers-title">Saved sessions</span><span class="providers-status" id="sessionsStatus"></span></summary>
-        <div class="providers-body">
-          <p class="providers-intro" id="sessionsIntro"></p>
-          <ul class="session-list" id="sessionList"></ul>
-        </div>
-      </details>
       <div class="project" id="project" hidden>
         <label class="field-label" for="projectPath">Project folder</label>
         <div class="project-row">
@@ -136,92 +149,9 @@
       <div class="controls">
         <div class="settings" id="settings">
           <p class="settings-title">Agents</p>
-          <div class="agent-row">
-            <span class="setting-label" aria-hidden="true">Builders</span>
-            <div class="agent-controls">
-              <label class="visually-hidden" for="provider-builders">Provider for the builders</label>
-              <select class="agent-provider" id="provider-builders" data-role="builders">
-                <option value="claude">Claude</option>
-                <option value="claude-code">Claude Code</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="hermes">Hermes Agent</option>
-                <option value="custom">Other endpoint</option>
-              </select>
-              <label class="visually-hidden" for="tier-builders">Claude model for the builders</label>
-              <select class="agent-tier" id="tier-builders" data-role="builders">
-                <option value="quick">Fast</option>
-                <option value="default">Balanced</option>
-                <option value="complex">Frontier</option>
-              </select>
-              <label class="visually-hidden" for="model-builders">Model for the builders</label>
-              <input class="agent-model" id="model-builders" data-role="builders" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
-            </div>
-          </div>
-          <div class="agent-row">
-            <span class="setting-label" aria-hidden="true">Council</span>
-            <div class="agent-controls">
-              <label class="visually-hidden" for="provider-council">Provider for the council</label>
-              <select class="agent-provider" id="provider-council" data-role="council">
-                <option value="claude">Claude</option>
-                <option value="claude-code">Claude Code</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="hermes">Hermes Agent</option>
-                <option value="custom">Other endpoint</option>
-              </select>
-              <label class="visually-hidden" for="tier-council">Claude model for the council</label>
-              <select class="agent-tier" id="tier-council" data-role="council">
-                <option value="quick">Fast</option>
-                <option value="default">Balanced</option>
-                <option value="complex">Frontier</option>
-              </select>
-              <label class="visually-hidden" for="model-council">Model for the council</label>
-              <input class="agent-model" id="model-council" data-role="council" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
-            </div>
-          </div>
-          <div class="agent-row">
-            <span class="setting-label" aria-hidden="true">Chair</span>
-            <div class="agent-controls">
-              <label class="visually-hidden" for="provider-chair">Provider for the Chair</label>
-              <select class="agent-provider" id="provider-chair" data-role="chair">
-                <option value="claude">Claude</option>
-                <option value="claude-code">Claude Code</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="hermes">Hermes Agent</option>
-                <option value="custom">Other endpoint</option>
-              </select>
-              <label class="visually-hidden" for="tier-chair">Claude model for the Chair</label>
-              <select class="agent-tier" id="tier-chair" data-role="chair">
-                <option value="quick">Fast</option>
-                <option value="default">Balanced</option>
-                <option value="complex">Frontier</option>
-              </select>
-              <label class="visually-hidden" for="model-chair">Model for the Chair</label>
-              <input class="agent-model" id="model-chair" data-role="chair" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
-            </div>
-          </div>
+          <p class="agents-summary"><span id="agentsSummary"></span> <button type="button" class="link-btn" id="changeAgents" aria-haspopup="dialog" aria-controls="settingsDrawer">Change</button></p>
           <label class="check review-toggle"><input type="checkbox" id="questionsOn" checked> Questions: before the vote, the council questions each proposal on edge cases, missing requirements and technical debt, and its builder answers and adjusts it</label>
           <label class="check review-toggle"><input type="checkbox" id="reviewOn"> Final review: have the plan checked for scaling and security, and revised, before it's final</label>
-          <div class="agent-row" id="row-review" hidden>
-            <span class="setting-label" aria-hidden="true">Review</span>
-            <div class="agent-controls">
-              <label class="visually-hidden" for="provider-review">Provider for the final review</label>
-              <select class="agent-provider" id="provider-review" data-role="review">
-                <option value="claude">Claude</option>
-                <option value="claude-code">Claude Code</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="hermes">Hermes Agent</option>
-                <option value="custom">Other endpoint</option>
-              </select>
-              <label class="visually-hidden" for="tier-review">Claude model for the final review</label>
-              <select class="agent-tier" id="tier-review" data-role="review">
-                <option value="quick">Fast</option>
-                <option value="default">Balanced</option>
-                <option value="complex">Frontier</option>
-              </select>
-              <label class="visually-hidden" for="model-review">Model for the final review</label>
-              <input class="agent-model" id="model-review" data-role="review" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
-            </div>
-          </div>
           <fieldset class="setting is-length">
             <legend class="visually-hidden">Length of each document</legend>
             <span class="setting-label" aria-hidden="true">Length</span>
@@ -241,51 +171,6 @@
       </div>
       <p class="tier-note" id="tierNote" hidden></p>
 
-      <details class="providers" id="providers">
-        <summary><span class="providers-title">Providers</span><span class="providers-status" id="providersStatus"></span></summary>
-        <div class="providers-body">
-          <p class="providers-intro" id="providersIntro"></p>
-          <fieldset class="provider" id="set-claude-code">
-            <legend>Claude Code</legend>
-            <p class="provider-status" id="status-claude-code"></p>
-            <p class="provider-help">Seats on Claude Code run inside the project folder, signed in as you are in Claude Code, and read the project's CLAUDE.md. They can read and search the project's files, and can't change them, run commands, reach outside the folder or use your MCP servers.</p>
-          </fieldset>
-          <fieldset class="provider" id="set-openrouter">
-            <legend>OpenRouter</legend>
-            <div class="provider-fields">
-              <label class="provider-field"><span>API key</span><input type="password" id="key-openrouter" autocomplete="off" spellcheck="false" placeholder="sk-or-…"></label>
-            </div>
-            <label class="check"><input type="checkbox" id="remember-openrouter"> Remember on this device</label>
-            <p class="provider-help">Create a key at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">openrouter.ai/keys</a>. Requests are billed to your OpenRouter account, and the model fields suggest what OpenRouter offers.</p>
-          </fieldset>
-          <fieldset class="provider" id="set-hermes">
-            <legend>Hermes Agent</legend>
-            <div class="provider-fields">
-              <label class="provider-field"><span>Address</span><input type="url" id="url-hermes" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:8642/v1"></label>
-              <label class="provider-field"><span>API key</span><input type="password" id="key-hermes" autocomplete="off" spellcheck="false" placeholder="Your API_SERVER_KEY"></label>
-            </div>
-            <label class="check"><input type="checkbox" id="remember-hermes"> Remember on this device</label>
-            <div class="provider-actions">
-              <button type="button" class="btn btn-quiet btn-small" id="check-hermes">Check connection</button>
-              <p class="provider-status" id="status-hermes" role="status"></p>
-            </div>
-            <p class="provider-help" id="help-hermes"></p>
-          </fieldset>
-          <fieldset class="provider" id="set-custom">
-            <legend>Other OpenAI-compatible endpoint</legend>
-            <div class="provider-fields">
-              <label class="provider-field"><span>Address</span><input type="url" id="url-custom" autocomplete="off" spellcheck="false" placeholder="http://localhost:11434/v1"></label>
-              <label class="provider-field"><span>API key, if it needs one</span><input type="password" id="key-custom" autocomplete="off" spellcheck="false"></label>
-            </div>
-            <label class="check"><input type="checkbox" id="remember-custom"> Remember on this device</label>
-            <div class="provider-actions">
-              <button type="button" class="btn btn-quiet btn-small" id="check-custom">Check connection</button>
-              <p class="provider-status" id="status-custom" role="status"></p>
-            </div>
-            <p class="provider-help">Any service that speaks the OpenAI chat completions format, such as Ollama, LM Studio, vLLM or LiteLLM, as long as it accepts requests from this page.</p>
-          </fieldset>
-        </div>
-      </details>
       <datalist id="models-claude-code"></datalist>
       <datalist id="models-openrouter"></datalist>
       <datalist id="models-hermes"></datalist>
@@ -323,7 +208,7 @@
           <li><span class="badge is-ring" aria-hidden="true"></span><p><strong>The Security Reviewer</strong> checks the plan for security and privacy: access, data exposure, injection, secrets and abuse. The Chair then revises the plan to address both reviews.</p></li>
         </ul>
       </div>
-      <p class="roster-foot">A session makes seven requests: three proposals, three reviews and the plan. The council's questions add up to twelve more, three councilors questioning each proposal and each builder answering, and the final review three more. Each role runs on the agent you choose, so the builders can draft on a fast, cheap model while the council and the Chair decide on a frontier one. Inside claude.ai the agents run on Claude; opened on its own, Quorum can use OpenRouter, Hermes Agent or another OpenAI-compatible service, and run with <code>bun start</code>, it can use Claude Code working inside your project folder.</p>
+      <p class="roster-foot">A session makes seven requests: three proposals, three reviews and the plan. The council's questions add up to twelve more, three councilors questioning each proposal and each builder answering, and the final review three more. Each role runs on the agent you choose, so the builders can draft on a fast, cheap model while the council and the Chair decide on a frontier one. Inside claude.ai the agents run on Claude. Run with <code>bun start</code>, every seat can be an agent working inside your project folder, on Claude Code, OpenRouter or another OpenAI-compatible service, and Quorum can also use Hermes Agent.</p>
     </section>
 
     <section class="stage-sec" id="sec-proposals" aria-labelledby="h-proposals" hidden>
@@ -331,6 +216,7 @@
         <h2 class="sec-title" id="h-proposals" tabindex="-1"><span class="sec-num">1</span>Proposals</h2>
         <p class="sec-note" id="propCount"></p>
       </div>
+      <p class="session-name" id="sessionName" hidden></p>
       <p class="motion-intro">The council is considering:</p>
       <blockquote class="motion-quote" id="motionQuote"></blockquote>
       <p class="motion-project" id="motionProject" hidden></p>
@@ -520,6 +406,167 @@
     <div class="convo-foot">
       <button type="button" class="btn btn-quiet btn-small" id="convoCopy">Copy as Markdown</button>
       <button type="button" class="btn btn-quiet btn-small" id="convoSaveAll">Download every conversation</button>
+    </div>
+  </section>
+</div>
+
+<div class="drawer" id="settingsDrawer" hidden>
+  <div class="drawer-scrim" data-close></div>
+  <section class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="drawer-head">
+      <h2 class="drawer-title" id="settingsTitle" tabindex="-1">Settings</h2>
+      <button type="button" class="btn btn-quiet btn-small" data-close>Close</button>
+    </div>
+    <div class="drawer-body">
+      <section class="agents" aria-labelledby="agentsTitle">
+        <h3 class="drawer-sub" id="agentsTitle">Agents</h3>
+        <p class="drawer-intro">Each role runs on its own provider and model, so the builders can draft on a fast, cheap model while the council and the Chair decide on a frontier one. The Chair's agent also names each session.</p>
+        <p class="field-note" id="settingsNote" hidden></p>
+        <div class="agent-row">
+          <span class="setting-label" aria-hidden="true">Builders</span>
+          <div class="agent-controls">
+            <label class="visually-hidden" for="provider-builders">Provider for the builders</label>
+            <select class="agent-provider" id="provider-builders" data-role="builders">
+              <option value="claude">Claude</option>
+              <option value="claude-code">Claude Code</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="hermes">Hermes Agent</option>
+              <option value="custom">Other endpoint</option>
+            </select>
+            <label class="visually-hidden" for="tier-builders">Claude model for the builders</label>
+            <select class="agent-tier" id="tier-builders" data-role="builders">
+              <option value="quick">Fast</option>
+              <option value="default">Balanced</option>
+              <option value="complex">Frontier</option>
+            </select>
+            <label class="visually-hidden" for="model-builders">Model for the builders</label>
+            <input class="agent-model" id="model-builders" data-role="builders" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+          </div>
+        </div>
+        <div class="agent-row">
+          <span class="setting-label" aria-hidden="true">Council</span>
+          <div class="agent-controls">
+            <label class="visually-hidden" for="provider-council">Provider for the council</label>
+            <select class="agent-provider" id="provider-council" data-role="council">
+              <option value="claude">Claude</option>
+              <option value="claude-code">Claude Code</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="hermes">Hermes Agent</option>
+              <option value="custom">Other endpoint</option>
+            </select>
+            <label class="visually-hidden" for="tier-council">Claude model for the council</label>
+            <select class="agent-tier" id="tier-council" data-role="council">
+              <option value="quick">Fast</option>
+              <option value="default">Balanced</option>
+              <option value="complex">Frontier</option>
+            </select>
+            <label class="visually-hidden" for="model-council">Model for the council</label>
+            <input class="agent-model" id="model-council" data-role="council" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+          </div>
+        </div>
+        <div class="agent-row">
+          <span class="setting-label" aria-hidden="true">Chair</span>
+          <div class="agent-controls">
+            <label class="visually-hidden" for="provider-chair">Provider for the Chair</label>
+            <select class="agent-provider" id="provider-chair" data-role="chair">
+              <option value="claude">Claude</option>
+              <option value="claude-code">Claude Code</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="hermes">Hermes Agent</option>
+              <option value="custom">Other endpoint</option>
+            </select>
+            <label class="visually-hidden" for="tier-chair">Claude model for the Chair</label>
+            <select class="agent-tier" id="tier-chair" data-role="chair">
+              <option value="quick">Fast</option>
+              <option value="default">Balanced</option>
+              <option value="complex">Frontier</option>
+            </select>
+            <label class="visually-hidden" for="model-chair">Model for the Chair</label>
+            <input class="agent-model" id="model-chair" data-role="chair" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+          </div>
+        </div>
+        <div class="agent-row" id="row-review" hidden>
+          <span class="setting-label" aria-hidden="true">Review</span>
+          <div class="agent-controls">
+            <label class="visually-hidden" for="provider-review">Provider for the final review</label>
+            <select class="agent-provider" id="provider-review" data-role="review">
+              <option value="claude">Claude</option>
+              <option value="claude-code">Claude Code</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="hermes">Hermes Agent</option>
+              <option value="custom">Other endpoint</option>
+            </select>
+            <label class="visually-hidden" for="tier-review">Claude model for the final review</label>
+            <select class="agent-tier" id="tier-review" data-role="review">
+              <option value="quick">Fast</option>
+              <option value="default">Balanced</option>
+              <option value="complex">Frontier</option>
+            </select>
+            <label class="visually-hidden" for="model-review">Model for the final review</label>
+            <input class="agent-model" id="model-review" data-role="review" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+          </div>
+        </div>
+      </section>
+      <details class="providers" id="providers">
+        <summary><span class="providers-title">Providers</span><span class="providers-status" id="providersStatus"></span></summary>
+        <div class="providers-body">
+          <p class="providers-intro" id="providersIntro"></p>
+          <fieldset class="provider" id="set-claude-code">
+            <legend>Claude Code</legend>
+            <p class="provider-status" id="status-claude-code"></p>
+            <p class="provider-help">Seats on Claude Code run inside the project folder, signed in as you are in Claude Code, and read the project's CLAUDE.md. They can read and search the project's files, and can't change them, run commands, reach outside the folder or use your MCP servers.</p>
+          </fieldset>
+          <fieldset class="provider" id="set-openrouter">
+            <legend>OpenRouter</legend>
+            <div class="provider-fields">
+              <label class="provider-field"><span>API key</span><input type="password" id="key-openrouter" autocomplete="off" spellcheck="false" placeholder="sk-or-…"></label>
+            </div>
+            <label class="check"><input type="checkbox" id="remember-openrouter"> Remember on this device</label>
+            <p class="provider-help">Seats on OpenRouter run as agents on Quorum's server, inside the project folder, and read the project's AGENTS.md. They can read and search the project's files, and can't change them, run commands or reach outside the folder, so their model has to support tool calling. Create a key at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">openrouter.ai/keys</a>. Requests are billed to your OpenRouter account, and the model fields suggest what OpenRouter offers.</p>
+          </fieldset>
+          <fieldset class="provider" id="set-hermes">
+            <legend>Hermes Agent</legend>
+            <div class="provider-fields">
+              <label class="provider-field"><span>Address</span><input type="url" id="url-hermes" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:8642/v1"></label>
+              <label class="provider-field"><span>API key</span><input type="password" id="key-hermes" autocomplete="off" spellcheck="false" placeholder="Your API_SERVER_KEY"></label>
+            </div>
+            <label class="check"><input type="checkbox" id="remember-hermes"> Remember on this device</label>
+            <div class="provider-actions">
+              <button type="button" class="btn btn-quiet btn-small" id="check-hermes">Check connection</button>
+              <p class="provider-status" id="status-hermes" role="status"></p>
+            </div>
+            <p class="provider-help" id="help-hermes"></p>
+          </fieldset>
+          <fieldset class="provider" id="set-custom">
+            <legend>Other OpenAI-compatible endpoint</legend>
+            <div class="provider-fields">
+              <label class="provider-field"><span>Address</span><input type="url" id="url-custom" autocomplete="off" spellcheck="false" placeholder="http://localhost:11434/v1"></label>
+              <label class="provider-field"><span>API key, if it needs one</span><input type="password" id="key-custom" autocomplete="off" spellcheck="false"></label>
+            </div>
+            <label class="check"><input type="checkbox" id="remember-custom"> Remember on this device</label>
+            <div class="provider-actions">
+              <button type="button" class="btn btn-quiet btn-small" id="check-custom">Check connection</button>
+              <p class="provider-status" id="status-custom" role="status"></p>
+            </div>
+            <p class="provider-help">Any service that speaks the OpenAI chat completions format with tool calling, such as Ollama, LM Studio, vLLM or LiteLLM. Its seats run as agents on Quorum's server, inside the project folder, the same way as OpenRouter's, and the server is what calls the service.</p>
+          </fieldset>
+        </div>
+      </details>
+    </div>
+  </section>
+</div>
+
+<div class="drawer" id="historyDrawer" hidden>
+  <div class="drawer-scrim" data-close></div>
+  <section class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="historyTitle">
+    <div class="drawer-head">
+      <h2 class="drawer-title" id="historyTitle" tabindex="-1">History</h2>
+      <p class="drawer-status" id="sessionsStatus"></p>
+      <button type="button" class="btn btn-quiet btn-small" data-close>Close</button>
+    </div>
+    <div class="drawer-body">
+      <p class="providers-intro" id="sessionsIntro"></p>
+      <ul class="session-list" id="sessionList"></ul>
     </div>
   </section>
 </div>

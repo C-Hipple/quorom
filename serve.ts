@@ -4,7 +4,7 @@
 // ~/.quorum/quorum.db, or the file QUORUM_DB names.
 import path from "node:path";
 import type { Server } from "bun";
-import { createBridge, folderInfo, type Bridge, type ClaudeCommand, type Env } from "./bridge";
+import { createBridge, folderInfo, type Bridge, type BridgeOptions, type ClaudeCommand, type Env } from "./bridge";
 import { defaultFile, openSessions, type Sessions } from "./sessions";
 
 const types: Record<string, string> = {
@@ -30,6 +30,7 @@ export function sameSite(req: Request, port: number): boolean {
 // o.claude    { command, args } for Claude Code, found on the PATH by default
 // o.db        the database file to save sessions in; without one, sessions aren't saved
 // o.port      the port to listen on, where 0 picks a free one; 8765 by default
+// o.openrouter, o.harnesses   passed to the bridge (see createBridge)
 export interface ServerOptions {
   root?: string;
   project?: string | null;
@@ -37,6 +38,8 @@ export interface ServerOptions {
   env?: Env;
   db?: string | null;
   port?: number;
+  openrouter?: string;
+  harnesses?: BridgeOptions["harnesses"];
 }
 
 export interface QuorumServer {
@@ -53,42 +56,50 @@ export function startServer(o?: ServerOptions): QuorumServer {
   const opts = o || {};
   const root = opts.root || path.join(import.meta.dir, "dist");
   const sessions = opts.db ? openSessions(opts.db) : null;
-  const bridge = createBridge({ project: opts.project, claude: opts.claude, env: opts.env, sessions });
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: opts.port ?? 8765,
-    // Claude Code can think for minutes without writing anything, so a quiet request isn't closed.
-    idleTimeout: 0,
-    development: false,
-    async fetch(req, srv) {
-      let url, pathname;
-      try {
-        url = new URL(req.url);
-        pathname = decodeURIComponent(url.pathname);
-      } catch (_) {
-        return new Response(null, { status: 400 });
-      }
-      if (pathname.startsWith("/api/")) {
-        if (!sameSite(req, srv.port as number)) {
-          return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+  const bridge = createBridge({ project: opts.project, claude: opts.claude, env: opts.env, sessions, openrouter: opts.openrouter, harnesses: opts.harnesses });
+  let server: Server<undefined>;
+  try {
+    server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: opts.port ?? 8765,
+      // A second Quorum on the same port fails to start, rather than sharing the port and every other request.
+      reusePort: false,
+      // Claude Code can think for minutes without writing anything, so a quiet request isn't closed.
+      idleTimeout: 0,
+      development: false,
+      async fetch(req, srv) {
+        let url, pathname;
+        try {
+          url = new URL(req.url);
+          pathname = decodeURIComponent(url.pathname);
+        } catch (_) {
+          return new Response(null, { status: 400 });
         }
-        return bridge.handle(req, url);
-      }
-      let rel = pathname;
-      if (rel.endsWith("/")) rel += "quorum.html";
-      const file = path.join(root, path.normalize(rel));
-      if (!file.startsWith(root + path.sep)) return new Response(null, { status: 403 });
-      const f = Bun.file(file);
-      if (!(await f.exists())) {
-        return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
-      }
-      return new Response(f, { headers: { "Content-Type": types[path.extname(file)] || "application/octet-stream", "Cache-Control": "no-store" } });
-    },
-    error(e) {
-      console.error(e);
-      return new Response(null, { status: 500 });
-    },
-  });
+        if (pathname.startsWith("/api/")) {
+          if (!sameSite(req, srv.port as number)) {
+            return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+          }
+          return bridge.handle(req, url);
+        }
+        let rel = pathname;
+        if (rel.endsWith("/")) rel += "quorum.html";
+        const file = path.join(root, path.normalize(rel));
+        if (!file.startsWith(root + path.sep)) return new Response(null, { status: 403 });
+        const f = Bun.file(file);
+        if (!(await f.exists())) {
+          return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+        }
+        return new Response(f, { headers: { "Content-Type": types[path.extname(file)] || "application/octet-stream", "Cache-Control": "no-store" } });
+      },
+      error(e) {
+        console.error(e);
+        return new Response(null, { status: 500 });
+      },
+    });
+  } catch (e) {
+    if (sessions) sessions.close();
+    throw e;
+  }
   return {
     server, port: server.port as number, bridge, sessions,
     async stop() {
@@ -106,7 +117,15 @@ if (import.meta.main) {
     if (info) project = info.path;
     else console.warn("There's no folder at " + arg + ", so Quorum starts without a project.");
   }
-  const quorum = startServer({ project, db: defaultFile(process.env), port: Number(process.env.PORT) || 8765 });
+  const port = Number(process.env.PORT) || 8765;
+  let quorum: QuorumServer;
+  try {
+    quorum = startServer({ project, db: defaultFile(process.env), port });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EADDRINUSE") throw e;
+    console.error("Port " + port + " is already in use, perhaps by another Quorum. Stop it, or start this one on another port, such as PORT=" + (port + 1) + " bun start.");
+    process.exit(1);
+  }
   console.log("Quorum is running at http://localhost:" + quorum.port + "/");
   if (project) console.log("Project: " + project);
   if (quorum.sessions) console.log("Sessions are saved in " + quorum.sessions.file + ".");

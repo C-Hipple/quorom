@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { startServer, type QuorumServer, type ServerOptions } from "../serve";
+import { fakeOpenAI, seatAgent } from "./fake-openai";
 
 const html = fs.readFileSync(path.join(import.meta.dir, "..", "dist", "quorum.html"), "utf8");
 const FAKE = { command: process.execPath, args: [path.join(import.meta.dir, "fake-claude.ts")] };
@@ -19,6 +20,7 @@ function tmpProject() {
   fs.mkdirSync(path.join(dir, ".git"));
   fs.writeFileSync(path.join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
   fs.writeFileSync(path.join(dir, "CLAUDE.md"), "# Notes\n");
+  fs.writeFileSync(path.join(dir, "AGENTS.md"), "# How it's built\nEverything is in src/app.js.\n");
   fs.writeFileSync(path.join(dir, "src", "app.js"), "export function app() {}\nexport const version = 1;\n");
   return fs.realpathSync(dir);
 }
@@ -93,7 +95,7 @@ test("served by Quorum's server, the page offers the project folder and puts eve
   await ready(h);
   assert.ok(!doc.getElementById("project").hidden);
   assert.strictEqual(doc.getElementById("projectPath").value, project, "the folder given to bun start");
-  assert.strictEqual(txt(doc.getElementById("projectStatus")), "Found " + path.basename(project) + ", a Git repository on main. It has a CLAUDE.md, which Claude Code reads.");
+  assert.strictEqual(txt(doc.getElementById("projectStatus")), "Found " + path.basename(project) + ", a Git repository on main. It has a CLAUDE.md, which Claude Code reads, and an AGENTS.md, which agents on OpenRouter and other endpoints read.");
   assert.deepStrictEqual(["builders", "council", "chair"].map(r => doc.getElementById("provider-" + r).value + ":" + doc.getElementById("model-" + r).value),
     ["claude-code:", "claude-code:", "claude-code:"]);
   assert.strictEqual(doc.getElementById("model-builders").placeholder, "Claude Code's default model");
@@ -104,7 +106,7 @@ test("served by Quorum's server, the page offers the project folder and puts eve
   assert.strictEqual(txt(doc.getElementById("status-claude-code")), "Claude Code 9.9.9 is installed.");
   assert.strictEqual(txt(doc.getElementById("providersStatus")), "Claude Code is set up");
   assert.ok(!doc.getElementById("providers").open, "nothing else needs setting up");
-  assert.strictEqual(txt(doc.getElementById("settingsHint")), "Claude Code explores the project before it writes, so its seats can take a few minutes.");
+  assert.strictEqual(txt(doc.getElementById("settingsHint")), "Agents on Claude Code explore the project before they write, so their seats can take a few minutes.");
 });
 
 test("browsing chooses the project folder", async () => {
@@ -143,7 +145,7 @@ test("a path that isn't a folder, or no folder at all, stops the council conveni
   type(h, "projectPath", "");
   await convene(h, "Add CSV export.");
   await sleep(50);
-  assert.strictEqual(txt(doc.getElementById("projectStatus")), "Choose the project folder for Claude Code to work in.");
+  assert.strictEqual(txt(doc.getElementById("projectStatus")), "Choose the project folder for the agents to work in.");
   assert.strictEqual(win.__quorum.S.phase, "idle");
   assert.strictEqual(logLines(logFile).length, before, "Claude Code wasn't run");
 });
@@ -160,7 +162,10 @@ test("a whole session runs on Claude Code inside the project folder", async () =
   assert.strictEqual(txt(doc.getElementById("motionProject")), "In the project " + project);
   await waitFor(() => win.__quorum.S.phase === "done", 20000, "done");
   await sleep(40);
-  const runs = logLines(logFile);
+  const all = logLines(logFile), naming = all.filter(r => /^Name a session/.test(r.prompt)), runs = all.filter(r => !naming.includes(r));
+  assert.strictEqual(naming.length, 1, "the Chair's agent named the session");
+  assert.strictEqual(naming[0].args[naming[0].args.indexOf("--model") + 1], "opus");
+  assert.strictEqual(naming[0].cwd, project);
   assert.strictEqual(runs.length, 7);
   runs.forEach(r => {
     assert.strictEqual(r.cwd, project, "every seat runs inside the project");
@@ -171,6 +176,14 @@ test("a whole session runs on Claude Code inside the project folder", async () =
   const seat = (r: any) => (/^You are (The \w+|the Chair)/.exec(r.prompt) || [])[1];
   assert.deepStrictEqual(runs.map(r => seat(r) + ":" + model(r)).sort(), [
     "The Advocate:", "The Architect:sonnet", "The Pragmatist:sonnet", "The Skeptic:", "The Strategist:", "The Visionary:sonnet", "the Chair:opus"]);
+  // The rail sums what the agents used by model: each run used 1,200 tokens in, 300 out and $0.0123.
+  assert.ok(!doc.getElementById("railUsage").hidden);
+  assert.deepStrictEqual([...doc.querySelectorAll("#railUsageList li")].map(txt), [
+    "claude-sonnet-fake via Claude Code 3.6k in \u00B7 900 out \u00B7 $0.0369",
+    "claude-default-fake via Claude Code 3.6k in \u00B7 900 out \u00B7 $0.0369",
+    "claude-opus-fake via Claude Code 1.2k in \u00B7 300 out \u00B7 $0.0123",
+    "Total 8.4k in \u00B7 2.1k out \u00B7 $0.0861",
+  ]);
   const S = win.__quorum.S;
   assert.ok(S.seats.A.text.includes("Ran in " + project), "the answer came from inside the project");
   assert.ok(!S.seats.A.text.includes("Let me look first."), "the preamble before exploring isn't part of the proposal");
@@ -241,6 +254,129 @@ test("without Claude Code installed, it's offered but switched off", async () =>
   await bare.stop();
 });
 
+// Puts every role on a provider, with a model if it's given.
+function every(h: Page, provider: string, model?: string) {
+  ["builders", "council", "chair"].forEach(r => {
+    type(h, "provider-" + r, provider, "change");
+    if (model !== undefined) type(h, "model-" + r, model);
+  });
+}
+
+test("a whole session runs on OpenRouter, each seat an agent inside the project folder", async () => {
+  const service = fakeOpenAI(seatAgent);
+  const srv = await listen({ project, env, openrouter: service.url });
+  const h = open(srv);
+  const { doc, win } = h;
+  await ready(h);
+  every(h, "openrouter");
+  assert.deepStrictEqual(["builders", "council", "chair"].map(r => doc.getElementById("model-" + r).value), ["z-ai/glm-5.3", "z-ai/glm-5.3", "z-ai/glm-5.3"]);
+  await convene(h, "Add CSV export.");
+  await sleep(20);
+  assert.strictEqual(txt(doc.getElementById("agentsNote")), "Add your OpenRouter API key under Providers.");
+  type(h, "key-openrouter", "sk-or-test");
+  assert.strictEqual(txt(doc.getElementById("settingsHint")), "Agents on OpenRouter explore the project before they write, so their seats can take a few minutes. OpenRouter bills your account for each request, and an agent makes several as it explores.");
+  assert.ok(doc.getElementById("railUsage").hidden, "nothing used yet");
+  await convene(h, "Add CSV export.");
+  // What an agent has used shows while it's still working, after its first turn.
+  await waitFor(() => !doc.getElementById("railUsage").hidden && win.__quorum.S.phase === "running", 8000, "tokens while the agents work");
+  await waitFor(() => win.__quorum.S.phase === "done", 20000, "done");
+  await sleep(40);
+  // Seven seats each made two requests and the Chair's agent one to name the session, each 100 tokens in and 20 out.
+  assert.deepStrictEqual([...doc.querySelectorAll("#railUsageList li")].map(txt), ["glm-5.3 via OpenRouter 1.5k in \u00B7 300 out \u00B7 $0.0150"]);
+  await sleep(40);
+  const S = win.__quorum.S;
+  assert.ok(["A", "B", "C", "advocate", "chair"].every(id => S.handoffs[id].data.text.includes("Ran in " + project)), "every seat worked in the project");
+  assert.strictEqual(service.requests.length, 15, "each seat read a file, then answered, and the Chair's agent named the session");
+  service.requests.filter(r => !/^Name a session/.test(r.body.messages[1].content)).forEach(r => {
+    assert.strictEqual(r.headers.get("authorization"), "Bearer sk-or-test");
+    assert.strictEqual(r.body.model, "z-ai/glm-5.3");
+    assert.ok(r.body.messages[0].content.includes("=== AGENTS.md ===\n# How it's built\nEverything is in src/app.js.\n=== End of AGENTS.md ==="));
+    assert.ok(r.body.messages[1].content.includes("You're running inside the project's folder, " + project + ", with tools that can read and search its files but not change them."));
+  });
+  assert.strictEqual(txt(doc.getElementById("propTier")), "Agent: glm-5.3 via OpenRouter");
+  doc.getElementById("propConvo").click();
+  await waitFor(() => doc.querySelector("#convoBody .turn.is-answer"), 3000, "the conversation");
+  assert.ok(/^glm-5\.3 via OpenRouter \u00B7 in /.test(txt(doc.getElementById("convoMeta"))), txt(doc.getElementById("convoMeta")));
+  assert.strictEqual(txt(doc.querySelector("#convoBody details.is-thinking pre")), "I should read the app first.");
+  assert.strictEqual(txt(doc.querySelector("#convoBody .turn.is-tool summary")), "Read " + path.join("src", "app.js") + " \u00B7 2 lines");
+  assert.ok(txt(doc.querySelector("#convoBody .turn.is-answer")).includes("Ran in " + project));
+  await srv.stop();
+  await service.stop();
+});
+
+test("a model that can't use tools, or a rejected key, pauses the session with advice", async () => {
+  const service = fakeOpenAI(req => {
+    if (req.body.model !== "z-ai/glm-5.3") return { status: 404, error: { error: { code: 404, message: "No endpoints found that support tool use." } } };
+    if (req.headers.get("authorization") !== "Bearer sk-or-right") return { status: 401, error: { error: { code: 401, message: "No auth credentials found" } } };
+    return seatAgent(req);
+  });
+  const srv = await listen({ project, env, openrouter: service.url });
+  const h = open(srv);
+  const { doc, win } = h;
+  await ready(h);
+  every(h, "openrouter", "nousresearch/hermes-4-405b");
+  type(h, "key-openrouter", "sk-or-wrong");
+  await convene(h, "Add CSV export.");
+  await waitFor(() => win.__quorum.S.phase === "paused", 8000, "paused");
+  await sleep(30);
+  assert.strictEqual(txt(doc.getElementById("noticeText")), "The Pragmatist, the Visionary and the Architect couldn't finish. The model can't use tools on OpenRouter, and every seat there works as an agent. Choose a model that supports tool calling under Agents, then retry.");
+  every(h, "openrouter", "z-ai/glm-5.3");
+  doc.getElementById("noticeRetry").click();
+  await waitFor(() => win.__quorum.S.phase === "paused" && /rejected/.test(txt(doc.getElementById("noticeText"))), 8000, "paused again");
+  assert.strictEqual(txt(doc.getElementById("noticeText")), "The Pragmatist, the Visionary and the Architect couldn't finish. OpenRouter rejected the API key. Check it under Providers, then retry.");
+  assert.strictEqual(txt(doc.getElementById("propNote")), "OpenRouter rejected the API key.");
+  type(h, "key-openrouter", "sk-or-right");
+  doc.getElementById("noticeRetry").click();
+  await waitFor(() => win.__quorum.S.phase === "done", 20000, "done");
+  await srv.stop();
+  await service.stop();
+});
+
+test("any OpenAI-compatible endpoint works through Quorum's server", async () => {
+  const service = fakeOpenAI(seatAgent);
+  const srv = await listen({ project, env });
+  const h = open(srv);
+  const { doc, win } = h;
+  await ready(h);
+  every(h, "custom");
+  await convene(h, "Add CSV export.");
+  await sleep(20);
+  assert.strictEqual(txt(doc.getElementById("agentsNote")), "Enter a model for the builders.");
+  every(h, "custom", "llama3.1:8b");
+  await convene(h, "Add CSV export.");
+  await sleep(20);
+  assert.strictEqual(txt(doc.getElementById("agentsNote")), "Add the address of your endpoint under Providers.");
+  type(h, "url-custom", service.url + "/");
+  type(h, "key-custom", "ollama");
+  doc.getElementById("check-custom").click();
+  await waitFor(() => /Connected/.test(txt(doc.getElementById("status-custom"))), 3000, "the check");
+  assert.strictEqual(txt(doc.getElementById("status-custom")), "Connected. It offers \u201Cglm-test\u201D and \u201Cother-model\u201D.");
+  await convene(h, "Add CSV export.");
+  await waitFor(() => win.__quorum.S.phase === "done", 20000, "done");
+  assert.ok(service.requests.every(r => r.path === "/v1/chat/completions" && r.body.model === "llama3.1:8b" && r.headers.get("authorization") === "Bearer ollama"));
+  assert.strictEqual(txt(doc.getElementById("planTier")), "Agent: llama3.1:8b via 127.0.0.1:" + new URL(service.url).port);
+  await srv.stop();
+  await service.stop();
+});
+
+test("stopping a session on OpenRouter closes its agents' requests", async () => {
+  const service = fakeOpenAI(() => ({ text: "Starting", hang: true, wait: 20 }));
+  const srv = await listen({ project, env, openrouter: service.url });
+  const h = open(srv);
+  const { doc, win } = h;
+  await ready(h);
+  every(h, "openrouter");
+  type(h, "key-openrouter", "sk-or-test");
+  await convene(h, "Add CSV export.");
+  await waitFor(() => service.requests.length === 4 && win.__quorum.S.seats.A.status === "writing", 8000, "three builders writing, and the session being named");
+  await sleep(450);
+  doc.getElementById("railStop").click();
+  await waitFor(() => service.aborted === 4, 5000, "the requests to close");
+  assert.strictEqual(win.__quorum.S.phase, "stopped");
+  await srv.stop();
+  await service.stop();
+});
+
 const dbFile = path.join(project, ".quorum", "quorum.db");
 const S = (win: any) => win.__quorum.S;
 const seatOf = (r: { prompt: string }) => (/^You are (The \w+ Reviewer|The \w+|the Chair)/.exec(r.prompt) || [])[1];
@@ -253,7 +389,16 @@ test("a session is saved as it runs, and the address names it", async () => {
   const { doc, win } = h;
   await ready(h);
   await waitFor(() => txt(doc.getElementById("sessionsStatus")) === "None yet", 3000, "the list");
-  assert.ok(!doc.getElementById("sessions").hidden);
+  assert.ok(!doc.getElementById("openHistory").hidden, "History is offered at the foot of the rail");
+  assert.ok(doc.getElementById("historyDrawer").hidden);
+  doc.getElementById("openHistory").click();
+  await sleep(20);
+  assert.ok(!doc.getElementById("historyDrawer").hidden);
+  assert.strictEqual(doc.activeElement.id, "historyTitle");
+  assert.strictEqual(doc.getElementById("openHistory").getAttribute("aria-expanded"), "true");
+  doc.getElementById("historyDrawer").dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.ok(doc.getElementById("historyDrawer").hidden, "Escape closes it");
+  assert.strictEqual(doc.activeElement.id, "openHistory", "and focus goes back");
   assert.strictEqual(txt(doc.getElementById("sessionsIntro")), "Each session is saved in " + dbFile + " as it runs, so you can come back to it after closing this page or stopping the server.");
   await convene(h, "Add CSV export.");
   await waitFor(() => win.__quorum.S.sessionId, 3000, "the session to be saved");
@@ -266,12 +411,12 @@ test("a session is saved as it runs, and the address names it", async () => {
   assert.strictEqual(txt(doc.getElementById("saveState")), "Saved");
   const got = srv.sessions.get(id);
   assert.strictEqual(got.session.status, "done");
-  assert.strictEqual(got.session.title, "The Plan", "named after its plan");
+  assert.strictEqual(got.session.title, "Session on Add CSV export", "named by the Chair's agent");
   assert.strictEqual(got.session.project, project);
   assert.deepStrictEqual(nodes(got), ROUND(1), "every step's handoff is saved");
   assert.strictEqual(got.handoffs.find((x: any) => x.node === "A").data.text, win.__quorum.S.handoffs.A.data.text);
   assert.ok(got.session.elapsed > 0);
-  assert.deepStrictEqual([...doc.querySelectorAll("#sessionList .session-open")].map(txt), ["The Plan"]);
+  assert.deepStrictEqual([...doc.querySelectorAll("#sessionList .session-open")].map(txt), ["Session on Add CSV export"]);
   assert.ok(/Plan ready · .* · Open now$/.test(txt(doc.querySelector("#sessionList .session-meta"))), txt(doc.querySelector("#sessionList .session-meta")));
 
   // Every step's conversation is saved with the session, and a page that opens it again can read them.
@@ -320,7 +465,7 @@ test("stopping the app mid-session and coming back carries on where it got to", 
   const { doc, win } = h2;
   await ready(h2);
   await waitFor(() => doc.querySelectorAll("#sessionList .session-item").length === 2, 3000, "the list");
-  assert.ok(doc.getElementById("sessions").open, "unfinished sessions are offered");
+  assert.strictEqual(txt(doc.getElementById("historyBadge")), "1 unfinished session", "History counts the unfinished session");
   assert.strictEqual(txt(doc.getElementById("sessionsStatus")), "2 sessions, 1 unfinished");
   const before = logLines(logFile).length;
   doc.querySelector('#sessionList [data-open="' + id + '"]').click();
@@ -359,8 +504,9 @@ test("input on the plan starts a new round, saved with the session", async () =>
   doc.getElementById("reviseBtn").click();
   await waitFor(() => S.round === 2 && S.phase === "done", 20000, "round 2");
   await win.__quorum.saved();
-  const runs = logLines(logFile);
-  assert.strictEqual(runs.length, 14);
+  const runs = logLines(logFile).filter(r => !/^Name a session/.test(r.prompt));
+  assert.strictEqual(runs.length, 14, "the session is named once, not again in round 2");
+  assert.strictEqual(logLines(logFile).length, 15);
   runs.slice(7).forEach(r => {
     assert.strictEqual(r.cwd, project, "revisions run inside the project too");
     assert.ok(r.prompt.includes("Why not stream the file? Admins must see who exported what."));
@@ -395,7 +541,7 @@ test("saved sessions can be deleted from the list", async () => {
   await ready(h);
   await waitFor(() => doc.querySelectorAll("#sessionList .session-item").length === 3, 3000, "the list");
   assert.strictEqual(txt(doc.getElementById("sessionsStatus")), "3 sessions");
-  assert.ok(!doc.getElementById("sessions").open, "nothing unfinished, so the list stays closed");
+  assert.ok(doc.getElementById("historyBadge").hidden, "nothing unfinished to count");
   const del = doc.querySelector("#sessionList .session-delete");
   const id = del.getAttribute("data-delete");
   del.click();
@@ -428,7 +574,7 @@ test("a final review runs inside the project too, and is saved with the session"
   assert.strictEqual(S.handoffs.security.data.findings.high, 1);
   assert.ok(S.handoffs.final.data.text.startsWith("# The Plan, Reviewed"));
   const got = srv.sessions.get(S.sessionId);
-  assert.strictEqual(got.session.title, "The Plan, Reviewed", "named after the reviewed plan");
+  assert.strictEqual(got.session.title, "Session on Add CSV export", "named by the Chair's agent");
   assert.deepStrictEqual(nodes(got), ROUND(1).concat(["1:final", "1:scaling", "1:security"]).sort());
   assert.strictEqual(got.handoffs.find((x: any) => x.node === "brief").data.review, true);
 

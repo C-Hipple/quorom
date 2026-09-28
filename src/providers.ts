@@ -41,6 +41,10 @@ interface StreamRequest {
   prompt: string;
   headers?: Record<string, string>;
   cwd?: string;
+  // For an agent on Quorum's local server: which provider's harness it runs on, and the address of the endpoint it
+  // calls, if it's another OpenAI-compatible endpoint.
+  provider?: string;
+  endpoint?: string;
   signal?: AbortSignal;
   onText?: (text: string) => void;
   onActivity?: (event: string, data: string) => void;
@@ -107,12 +111,19 @@ export const Providers = (function (Core) {
 
     // Set as the stream is read, so their types are given rather than narrowed from their first values.
     let raw = "", reasoning = "", finish = null as string | null, served = req.model, failure = null as Json | null, done = false, traced = false;
+    let usage = null as Json | null;
     const onData = (data: string) => {
       if (data === "[DONE]") { done = true; return; }
       let obj;
       try { obj = JSON.parse(data); } catch (_) { return; }
       if (obj && obj.error) { failure = obj.error; done = true; return; }
       if (obj && typeof obj.model === "string" && obj.model) served = obj.model;
+      // Services that count what a completion used say so in its last chunk.
+      const u = obj && obj.usage;
+      if (u && typeof u === "object" && (typeof u.prompt_tokens === "number" || typeof u.completion_tokens === "number")) {
+        usage = { turns: 1, inputTokens: Number(u.prompt_tokens) || 0, outputTokens: Number(u.completion_tokens) || 0 };
+        if (typeof u.cost === "number") usage.costUsd = u.cost;
+      }
       const choice = obj && obj.choices && obj.choices[0];
       if (!choice) return;
       const piece = choice.delta && typeof choice.delta.content === "string" ? choice.delta.content :
@@ -134,6 +145,7 @@ export const Providers = (function (Core) {
       traced = true;
       const thinking = [reasoning.trim(), Core.thinkingOf(raw)].filter(Boolean).join("\n\n");
       if (thinking && req.onTrace) req.onTrace("thinking", { text: thinking });
+      if (usage && req.onTrace) req.onTrace("usage", usage);
     };
 
     const type = (res.headers && res.headers.get && res.headers.get("content-type")) || "";
@@ -169,18 +181,19 @@ export const Providers = (function (Core) {
     return { text, truncated: finish === "length", served };
   }
 
-  // One seat on Claude Code, which Quorum's local server (serve.ts) runs inside the project folder. The server
-  // streams events: start {model, tools}, turn {} when a new message begins, text {delta}, block {type, text} once a
-  // block of a message is written, tool {id, tool, detail, input} and tool_result {id, content, error}, and finally
+  // One seat run as an agent by Quorum's local server (serve.ts), inside the project folder: on Claude Code, or on
+  // Quorum's agent loop for OpenRouter and other endpoints. The server streams the same events for every harness:
+  // start {model, tools}, turn {} when a new message begins, text {delta}, block {type, text} once a block of a message
+  // is written, tool {id, tool, detail, input} and tool_result {id, content, error}, and finally
   // done {text, truncated, model, usage} or error {code, message, usage}.
-  async function claudeCode(req: StreamRequest): Promise<ProviderResult> {
+  async function localAgent(req: StreamRequest): Promise<ProviderResult> {
     const signal = req.signal;
     let res: Response;
     try {
       res = await fetch(req.url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: req.prompt, model: req.model || "", cwd: req.cwd }),
+        body: JSON.stringify({ provider: req.provider, prompt: req.prompt, model: req.model || "", cwd: req.cwd, key: req.key || "", url: req.endpoint || "" }),
         signal,
       });
     } catch (e: any) {
@@ -215,6 +228,7 @@ export const Providers = (function (Core) {
         if (req.onActivity) req.onActivity("tool", ev.data);
         trace("tool", { id: d.id, name: d.tool, detail: d.detail, input: d.input });
       } else if (ev.event === "tool_result") trace("tool_result", { id: d.id, content: d.content, error: d.error });
+      else if (ev.event === "usage") trace("usage", d);
       else if (ev.event === "done") final = d;
       else if (ev.event === "error") failure = d;
       if ((final || failure) && d.usage) trace("usage", d.usage);
@@ -230,12 +244,6 @@ export const Providers = (function (Core) {
     const out = String(final.text || text).replace(/\s+$/, "");
     if (!out.trim()) throw { code: "empty_completion", message: "The answer was empty." };
     return { text: out, truncated: !!final.truncated, served: final.model || served };
-  }
-
-  function openRouterHeaders(): Record<string, string> {
-    const h: Record<string, string> = { "X-Title": "Quorum" };
-    if (typeof location !== "undefined" && /^https?:$/.test(location.protocol)) h["HTTP-Referer"] = location.origin;
-    return h;
   }
 
   // run(agent, prompt, { config, sample, cwd, signal, onText, onActivity, onTrace })
@@ -255,17 +263,15 @@ export const Providers = (function (Core) {
         return { text: String(res.text || ""), truncated: !!res.truncated, served: res.modelTierApplied || agent.model };
       }
       case "claude-code":
+      case "openrouter":
+      case "custom":
         if (!cfg.local) throw { code: "unreachable", message: "Quorum's local server isn't running." };
         if (!o.cwd) throw { code: "project_missing", message: "No project folder." };
-        return claudeCode({
-          url: joinUrl(cfg.local, "api/claude-code"), model: agent.model, prompt, cwd: o.cwd,
-          signal: o.signal, onText: o.onText, onActivity: o.onActivity, onTrace: o.onTrace,
-        });
-      case "openrouter":
-        if (!cfg.keys.openrouter) throw { code: "missing_key", message: "No OpenRouter API key." };
-        return streamChat({
-          url: "https://openrouter.ai/api/v1/chat/completions",
-          key: cfg.keys.openrouter, model: agent.model, prompt, headers: openRouterHeaders(),
+        if (agent.provider === "openrouter" && !cfg.keys.openrouter) throw { code: "missing_key", message: "No OpenRouter API key." };
+        if (agent.provider === "custom" && !cfg.urls.custom) throw { code: "not_found", message: "No address for the endpoint." };
+        return localAgent({
+          url: joinUrl(cfg.local, "api/agent"), provider: agent.provider, model: agent.model, prompt, cwd: o.cwd,
+          key: agent.provider === "claude-code" ? "" : cfg.keys[agent.provider], endpoint: agent.provider === "custom" ? cfg.urls.custom : "",
           signal: o.signal, onText: o.onText, onActivity: o.onActivity, onTrace: o.onTrace,
         });
       case "hermes":
@@ -275,20 +281,15 @@ export const Providers = (function (Core) {
           key: cfg.keys.hermes, model: agent.model || "hermes-agent", prompt,
           signal: o.signal, onText: o.onText, onActivity: o.onActivity, onTrace: o.onTrace,
         });
-      case "custom":
-        if (!cfg.urls.custom) throw { code: "not_found", message: "No address for the endpoint." };
-        return streamChat({
-          url: joinUrl(cfg.urls.custom, "chat/completions"),
-          key: cfg.keys.custom, model: agent.model, prompt,
-          signal: o.signal, onText: o.onText, onActivity: o.onActivity, onTrace: o.onTrace,
-        });
       default:
         throw { code: "bad_request", message: "Unknown provider." };
     }
   }
 
-  // The models an endpoint offers, for the model pickers. Resolves [{ id, name }].
+  // The models an endpoint offers, for the model pickers. Resolves [{ id, name }]. Another endpoint is asked through
+  // Quorum's local server, which is what its agents call it from.
   async function listModels(provider: string, cfg: ProviderConfig): Promise<{ id: string, name: string }[]> {
+    if (provider === "custom") return localModels(cfg);
     const url = provider === "openrouter" ? "https://openrouter.ai/api/v1/models" :
       joinUrl(provider === "hermes" ? (cfg.urls.hermes || Core.PROVIDERS.hermes.defaultUrl) : cfg.urls.custom, "models");
     const key = provider === "openrouter" ? "" : cfg.keys[provider];
@@ -309,6 +310,27 @@ export const Providers = (function (Core) {
     return list
       .filter(m => m && typeof m.id === "string")
       .map(m => ({ id: m.id, name: typeof m.name === "string" ? m.name : "" }));
+  }
+
+  async function localModels(cfg: ProviderConfig): Promise<{ id: string, name: string }[]> {
+    if (!cfg.local) throw { code: "unreachable", message: "Quorum's local server isn't running." };
+    let res: Response;
+    try {
+      res = await fetch(joinUrl(cfg.local, "api/models"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: cfg.urls.custom || "", key: cfg.keys.custom || "" }),
+      });
+    } catch (e: any) {
+      throw { code: "unreachable", message: String((e && e.message) || e) };
+    }
+    let body: Json | null = null;
+    try { body = await res.json(); } catch (_) { body = null; }
+    if (!res.ok || !body || !Array.isArray(body.models)) {
+      const err = body && body.error ? body.error : {};
+      throw { code: typeof err.code === "string" ? err.code : "upstream_error", message: String(err.message || "") };
+    }
+    return body.models;
   }
 
   return { run, listModels, streamChat, joinUrl };

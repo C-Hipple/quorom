@@ -1,6 +1,6 @@
 import type { FolderInfo } from "../bridge";
 import type { Session } from "../sessions";
-import { Core, type Agent, type AgentStep, type Agents, type Ballot, type Brief, type Entry, type FinalData, type ModelChoice, type PlanData, type Project, type Role, type Tally, type Transcript } from "./core";
+import { Core, type Agent, type AgentStep, type Agents, type Ballot, type Brief, type Entry, type FinalData, type ModelChoice, type PlanData, type Project, type Role, type Tally, type Transcript, type Usage } from "./core";
 import { Graph, type Handoffs, type Task } from "./graph";
 import { Providers, type ProviderConfig, type SampleFn, type TraceKind } from "./providers";
 
@@ -190,6 +190,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     auth_failed: { kind: "retry", msg: "{provider} rejected the API key. Check it under Providers, then retry.", short: "{provider} rejected the API key." },
     no_credits: { kind: "retry", msg: "{provider} says the account is out of credits. Add credits, then retry.", short: "The {provider} account is out of credits." },
     bad_model: { kind: "retry", msg: "{provider} didn't accept the model name. Check it under Agents, then retry.", short: "{provider} didn't accept the model name." },
+    no_tools: { kind: "retry", msg: "The model can't use tools on {provider}, and every seat there works as an agent. Choose a model that supports tool calling under Agents, then retry.", short: "The model can't use tools on {provider}." },
     not_found: { kind: "retry", msg: "{provider} answered \u201Cnot found\u201D. Check the address under Providers, which usually ends in /v1, and the model name, then retry.", short: "{provider} answered \u201Cnot found\u201D." },
     unreachable: { kind: "retry", msg: "Couldn't reach {provider}. {hint}", short: "Couldn't reach {provider}." },
     bad_request: { kind: "retry", msg: "{provider} rejected the request{detail}. Check the model and provider settings, then retry.", short: "{provider} rejected the request." },
@@ -213,8 +214,9 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     if (provider === "hermes") {
       return "Check that hermes gateway is running" + (origin ? " and that API_SERVER_CORS_ORIGINS includes " + origin : ", and open Quorum from a local web server so Hermes can allow it") + ", then retry.";
     }
-    if (provider === "custom") return "Check the address, and that the service accepts requests from this page, then retry.";
+    if (provider === "custom") return "Check the address, and that Quorum's server, which bun start runs, is still running and can reach it, then retry.";
     if (provider === "claude-code") return "Check that Quorum's server, which bun start runs, is still running, then retry.";
+    if (provider === "openrouter") return "Check your internet connection, and that Quorum's server, which bun start runs, is still running, then retry.";
     return "Check your internet connection, then retry.";
   }
 
@@ -246,7 +248,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     providers: $<HTMLDetailsElement>("providers"), providersStatus: $("providersStatus"), providersIntro: $("providersIntro"), helpHermes: $("help-hermes"),
     status: $("status"), clock: $("clock"), railStop: $<HTMLButtonElement>("railStop"),
     secProposals: $("sec-proposals"), secCouncil: $("sec-council"), secVote: $("sec-vote"), secPlan: $("sec-plan"),
-    motionQuote: $("motionQuote"), propCount: $("propCount"), propPane: $("propPane"), propByline: $("propByline"),
+    motionQuote: $("motionQuote"), sessionName: $("sessionName"), propCount: $("propCount"), propPane: $("propPane"), propByline: $("propByline"),
     propDoc: $("propDoc"), propNote: $("propNote"), propTier: $("propTier"), councilTier: $("councilTier"), planTier: $("planTier"),
     councilCount: $("councilCount"), councilPane: $("councilPane"), councilByline: $("councilByline"),
     councilDoc: $("councilDoc"), ballot: $("ballot"), councilNote: $("councilNote"),
@@ -257,7 +259,10 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     project: $("project"), projectPath: $<HTMLInputElement>("projectPath"), projectBrowse: $<HTMLButtonElement>("projectBrowse"), projectStatus: $("projectStatus"),
     projectBrowser: $("projectBrowser"), projectWhere: $("projectWhere"), projectDirs: $("projectDirs"), motionProject: $("motionProject"),
     statusClaudeCode: $("status-claude-code"),
-    sessions: $<HTMLDetailsElement>("sessions"), sessionsStatus: $("sessionsStatus"), sessionsIntro: $("sessionsIntro"), sessionList: $("sessionList"),
+    openSettings: $<HTMLButtonElement>("openSettings"), openHistory: $<HTMLButtonElement>("openHistory"), settingsBadge: $("settingsBadge"), historyBadge: $("historyBadge"),
+    settingsDrawer: $("settingsDrawer"), settingsTitle: $("settingsTitle"), settingsNote: $("settingsNote"), historyDrawer: $("historyDrawer"), historyTitle: $("historyTitle"),
+    agentsSummary: $("agentsSummary"), changeAgents: $<HTMLButtonElement>("changeAgents"), railUsage: $("railUsage"), railUsageList: $("railUsageList"),
+    sessionsStatus: $("sessionsStatus"), sessionsIntro: $("sessionsIntro"), sessionList: $("sessionList"),
     saveState: $("saveState"), motionRound: $("motionRound"), motionRoundIntro: $("motionRoundIntro"), motionRoundQuote: $("motionRoundQuote"),
     revise: $("revise"), reviseInput: $<HTMLTextAreaElement>("reviseInput"), reviseNote: $("reviseNote"), reviseBtn: $<HTMLButtonElement>("reviseBtn"),
     secRounds: $("sec-rounds"), roundsList: $("roundsList"),
@@ -309,6 +314,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     round: number,
     past: Handoffs[],
     sessionId: string | null,
+    name: string,
     agents: Agents,
     seats: Record<string, Seat>,
     revealed: Record<Section, boolean>,
@@ -329,6 +335,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     round: 1, // the round of the session: each round after the first revises the last plan with the requester's input
     past: [], // the handoffs of each earlier round, oldest first
     sessionId: null, // the id of the saved session, when Quorum's local server saves sessions
+    name: "", // what the Chair's agent named the session, once it has
     agents: Core.normalizeAgents(null, INSIDE),
     seats: {},
     revealed: { proposals: false, questions: false, council: false, vote: false, review: false, plan: false },
@@ -345,6 +352,9 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
   let sampleFn: SampleFn | null = null;
   let sampleState: "pending" | "ready" | "none" | "blocked" = "pending";
   let downloadsNS: Downloads | null = null;
+  let nameCtl: AbortController | null = null;
+  // What naming the session used, which isn't a step with a conversation of its own.
+  let nameUsage: { agent: Agent, served: string, usage: Usage | null, status: string } | null = null;
   let clockTimer: ReturnType<typeof setInterval> | 0 = 0;
 
   function freshSeat(): Seat {
@@ -438,15 +448,17 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
       if (INSIDE) {
         return { message: PROVIDERS[a.provider].label + " only works when Quorum is open outside Claude, because pages published on Claude can't reach other services. Choose Claude for " + who + ", or open the downloaded file.", focus: providerSelects[role] };
       }
-      if (a.provider === "claude-code") {
-        if (!local) return { message: "Claude Code runs through Quorum's local server. Start it with bun start and open Quorum at the address it prints, or choose another provider for " + who + ".", focus: providerSelects[role] };
-        if (!local.claudeCode.available) return { message: "Quorum's server couldn't find Claude Code. Install it, or restart the server with QUORUM_CLAUDE_BIN set to its path, or choose another provider for " + who + ".", focus: providerSelects[role], openProviders: true };
+      // Claude Code, OpenRouter and other endpoints run as agents on Quorum's local server, inside the project folder.
+      if (PROVIDERS[a.provider].local) {
+        const label = a.provider === "custom" ? "Your endpoint" : PROVIDERS[a.provider].label;
+        if (!local) return { message: label + " runs through Quorum's local server. Start it with bun start and open Quorum at the address it prints, or choose another provider for " + who + ".", focus: providerSelects[role] };
+        if (a.provider === "claude-code" && !local.claudeCode.available) return { message: "Quorum's server couldn't find Claude Code. Install it, or restart the server with QUORUM_CLAUDE_BIN set to its path, or choose another provider for " + who + ".", focus: providerSelects[role], openProviders: true };
         if (!project) {
           return resuming ?
-            { message: "This session started without a project folder, so Claude Code can't join it. Choose another provider for " + who + ", or convene again.", focus: providerSelects[role] } :
-            { message: "Choose the project folder for Claude Code to work in.", focus: els.projectPath, project: true };
+            { message: "This session started without a project folder, so " + Core.midName(label).replace(/^Your/, "your") + " can't join it. Choose another provider for " + who + ", or convene again.", focus: providerSelects[role] } :
+            { message: "Choose the project folder for the agents to work in.", focus: els.projectPath, project: true };
         }
-        continue;
+        if (a.provider === "claude-code") continue;
       }
       if (!a.model) return { message: "Enter a model for " + who + ".", focus: modelFields[role] };
       if (a.provider === "openrouter" && !creds.keys.openrouter) return { message: "Add your OpenRouter API key under Providers.", focus: credFields.keys.openrouter, openProviders: true };
@@ -456,9 +468,12 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     return null;
   }
 
+  // A problem with the agents shows beside Convene, and in Settings, where it's put right.
   function showAgentsNote(text: string) {
-    els.agentsNote.textContent = text;
-    els.agentsNote.hidden = !text;
+    [els.agentsNote, els.settingsNote].forEach(el => {
+      el.textContent = text;
+      el.hidden = !text;
+    });
   }
 
   function showAgentsProblem(problem: AgentsProblem) {
@@ -468,7 +483,13 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     } else {
       showAgentsNote(problem.message);
     }
+    revealProblem(problem);
+  }
+
+  // Takes the viewer to what needs changing: in Settings, the drawer opens on it.
+  function revealProblem(problem: AgentsProblem) {
     if (problem.openProviders) els.providers.open = true;
+    if (problem.focus && els.settingsDrawer.contains(problem.focus)) showDrawer("settings", document.activeElement as HTMLElement | null);
     if (problem.focus) problem.focus.focus();
   }
   function currentLength(): string {
@@ -589,13 +610,54 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     S.sel = { proposals: "A", questions: "A", council: "advocate", review: "scaling" };
     S.clock = { startedAt: 0, accumulated: 0 };
     S.convenedAt = Date.now();
+    S.name = "";
+    nameUsage = null;
     saveSession();
     startClock();
     render();
     scrollToSection(els.secProposals);
     await startSaving();
     if (tok !== S.token) return;
+    nameSession();
     run(tok).catch(onRunCrash);
+  }
+
+  // The Chair's agent names the session while the builders work. Naming isn't a step of the session: if no name comes
+  // back, the session carries on, titled after its plan or its feature.
+  async function nameSession() {
+    const session = S.session, b = brief(), agent = S.agents.chair;
+    const ctl = new AbortController();
+    if (nameCtl) nameCtl.abort();
+    nameCtl = ctl;
+    const counted = { agent: { provider: agent.provider, model: agent.model }, served: "", usage: null as Usage | null, status: "running" };
+    try {
+      const res = await Providers.run(agent, Core.namePrompt(b), {
+        sample: sampleFn,
+        config: credsSnapshot(),
+        cwd: b.project ? b.project.path : "",
+        signal: ctl.signal,
+        onTrace: (kind, d) => {
+          if (session !== S.session) return;
+          if (kind === "start" && typeof d.model === "string") counted.served = d.model;
+          if (kind === "usage") counted.usage = d;
+          nameUsage = counted;
+          schedule();
+        },
+      });
+      const name = Core.sessionName(res.text);
+      if (!name || session !== S.session || ctl.signal.aborted) return;
+      S.name = name;
+      saveSession();
+      save(id => api("PATCH", "sessions/" + id, { title: name }));
+      save(() => refreshSessions());
+      schedule();
+    } catch (_) {
+      /* the session keeps its other title */
+    } finally {
+      if (nameCtl === ctl) nameCtl = null;
+      counted.status = "done";
+      if (nameUsage === counted) schedule();
+    }
   }
 
   // Runs the session graph on from the handoffs already made, so a retry or resume redoes only what's missing.
@@ -752,6 +814,10 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
   }
 
   function abortAll() {
+    if (nameCtl) {
+      nameCtl.abort();
+      nameCtl = null;
+    }
     ALL_IDS.forEach(id => {
       const seat = S.seats[id];
       if (seat && seat.ctl) {
@@ -812,6 +878,8 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     const hadFocus = document.activeElement === els.resume || document.activeElement === els.noticeRetry;
     render();
     if (hadFocus) els.convene.focus();
+    // A session stopped before it was named is named now.
+    if (!S.name) nameSession();
     run(tok).catch(onRunCrash);
   }
 
@@ -851,7 +919,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
       const d = handedOff(id);
       if (d) seats[id] = { text: d.text, truncated: d.truncated, agent: d.agent, served: d.served };
     });
-    store.set(SESSION_KEY, JSON.stringify({ v: 1, brief: b, revision: handedOff("revision"), agents: S.agents, elapsed: elapsed(), seats }));
+    store.set(SESSION_KEY, JSON.stringify({ v: 1, brief: b, revision: handedOff("revision"), name: S.name, agents: S.agents, elapsed: elapsed(), seats }));
   }
 
   function agentFrom(a: any): Agent | null {
@@ -902,6 +970,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     S.round = rev ? rev.round : 1;
     S.past = [];
     S.agents = Core.normalizeAgents(saved.agents, INSIDE);
+    S.name = typeof saved.name === "string" ? Core.sessionName(saved.name) : "";
     resetSeats();
     resetConvos(false);
     ALL_IDS.forEach(id => {
@@ -952,16 +1021,15 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     const claude = list.filter(a => a.provider === "claude").map(a => a.model);
     if (claude.indexOf("complex") >= 0) hints.push("Frontier is Claude's most capable model and thinks longest, so its seats can take a few minutes.");
     else if (claude.length && claude.every(t => t === "quick")) hints.push("Fast is Claude's quickest, cheapest model.");
-    if (list.some(a => a.provider === "claude-code")) hints.push("Claude Code explores the project before it writes, so its seats can take a few minutes.");
-    if (list.some(a => a.provider === "openrouter")) hints.push("OpenRouter bills your account for each request.");
+    const explorers = ["claude-code", "openrouter", "custom"].filter(p => list.some(a => a.provider === p));
+    if (explorers.length) {
+      hints.push("Agents on " + Core.listAnd(explorers.map(p => (p === "custom" ? "your endpoint" : PROVIDERS[p].label))) +
+        " explore the project before they write, so their seats can take a few minutes.");
+    }
+    if (list.some(a => a.provider === "openrouter")) hints.push("OpenRouter bills your account for each request, and an agent makes several as it explores.");
     if (list.some(a => a.provider === "hermes")) hints.push("Hermes Agent may use its tools first, so its seats can take longer.");
     if (els.questionsOn.checked) hints.push("The council's questions add up to twelve requests: each councilor's questions on each proposal, and each builder's answers.");
     if (els.reviewOn.checked) hints.push("The final review adds three requests: two reviews and the Chair's revision.");
-    const blind = ["openrouter", "custom"].filter(p => list.some(a => a.provider === p));
-    if (local && proj.info && blind.length) {
-      hints.push(Core.listAnd(blind.map(p => (p === "custom" ? "your endpoint" : PROVIDERS[p].label))).replace(/^y/, "Y") +
-        " can't read the project folder, so " + (blind.length > 1 ? "their" : "its") + " seats work from the pasted context.");
-    }
     return hints.join(" ") || "Each role can run on a different provider and model.";
   }
 
@@ -1065,9 +1133,15 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
       Array.prototype.forEach.call(providerSelects[r.id].options, (opt: HTMLOptionElement) => {
         let usable = Core.usableHere(opt.value, INSIDE);
         let why = INSIDE ? " (outside Claude only)" : " (inside claude.ai only)";
-        if (usable && PROVIDERS[opt.value].local && localState !== "pending" && !providerReady(opt.value)) {
-          usable = false;
-          why = local ? " (not installed)" : " (needs bun start)";
+        // Agents on the local server need it running, and Claude Code needs to be installed too.
+        if (usable && PROVIDERS[opt.value].local && localState !== "pending") {
+          if (!local) {
+            usable = false;
+            why = " (needs bun start)";
+          } else if (opt.value === "claude-code" && !local.claudeCode.available) {
+            usable = false;
+            why = " (not installed)";
+          }
         }
         opt.disabled = !usable;
         const base = PROVIDERS[opt.value].label;
@@ -1111,8 +1185,8 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
 
   function writeProvidersIntro() {
     els.providersIntro.textContent = INSIDE ?
-      "Quorum is open inside Claude, so every agent runs on Claude. Pages published on Claude can't reach other services. To use OpenRouter, Hermes Agent or another endpoint, open Quorum on its own, from the downloaded file or your GitHub Pages site. To use Claude Code, run Quorum on your computer with bun start." :
-      "Keys stay in this browser and are sent only to the service they belong to. Leave Remember off on a shared computer.";
+      "Quorum is open inside Claude, so every agent runs on Claude. Pages published on Claude can't reach other services. To use Claude Code, OpenRouter or another endpoint, run Quorum on your computer with bun start. To use Hermes Agent, open Quorum on its own." :
+      "Keys stay in this browser and are sent only to the service they belong to, through Quorum's server on this computer for OpenRouter and other endpoints. Leave Remember off on a shared computer.";
   }
 
   function providerReady(p: string): boolean {
@@ -1132,6 +1206,9 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
       if (text) text = text.charAt(0).toUpperCase() + text.slice(1);
     }
     setText(els.providersStatus, text);
+    // Settings says when a provider the agents use still needs setting up.
+    const needs = !INSIDE && ["claude-code"].concat(EXTERNAL).some(p => activeRoles(reviewing()).some(r => providerSelects[r.id].value === p) && !providerReady(p));
+    toggle(els.settingsBadge, needs);
     renderClaudeCodeStatus();
   }
 
@@ -1290,6 +1367,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     });
     addBtns.forEach(b => { b.disabled = running; });
     setText(els.settingsHint, settingsHint(currentAgents()));
+    setText(els.agentsSummary, agentsSummary());
     const tierNote = tierNoteText();
     toggle(els.tierNote, !!tierNote);
     setText(els.tierNote, tierNote);
@@ -1402,7 +1480,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
             return "Waiting for Claude. If you're asked to allow this page to use Claude, allow it to begin.";
           }
           if (nb === 0) {
-            return S.agents.builders.provider === "claude-code" ? "The builders are exploring the project and drafting their proposals." : "The builders are drafting their proposals.";
+            return PROVIDERS[S.agents.builders.provider].local ? "The builders are exploring the project and drafting their proposals." : "The builders are drafting their proposals.";
           }
           return "The builders are drafting. " + nb + " of 3 proposals are in.";
         }
@@ -1453,6 +1531,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     });
     toggle(els.railStop, S.phase === "running");
     toggle(els.railConvo, S.phase !== "idle" && convoSteps().length > 0);
+    renderUsage();
     renderClock();
     renderSaveState();
   }
@@ -1466,6 +1545,11 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     toggle(els.secQuestions, S.revealed.questions);
     toggle(els.secPlan, S.revealed.plan);
     setText(els.motionQuote, brief().feature);
+    const named = S.phase !== "idle" && !!S.name;
+    toggle(els.sessionName, named);
+    setText(els.sessionName, named ? S.name : "");
+    const title = named ? S.name + " \u00B7 Quorum" : "Quorum";
+    if (document.title !== title) document.title = title;
     const input = roundInput(S.handoffs);
     toggle(els.motionRound, !!input);
     setText(els.motionRoundIntro, input ? "Round " + S.round + " revises the round " + (S.round - 1) + " plan with your input:" : "");
@@ -1499,7 +1583,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
   function waitCopy(agent: Agent | null): string {
     if (!agent || agent.provider !== "claude") {
       return agent && agent.provider === "hermes" ? "Hermes Agent may use its tools first, so writing can take a few minutes to start." :
-        agent && agent.provider === "claude-code" ? "Claude Code explores the project first, so writing can take a few minutes to start." :
+        agent && PROVIDERS[agent.provider].local ? "It explores the project first, so writing can take a few minutes to start." :
           "Writing usually starts within a minute.";
     }
     return agent.model === "quick" ? "Writing usually starts within a few seconds." :
@@ -2316,7 +2400,8 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     if (!i) return { html: "" };
     const on = i.git ? (i.git.branch ? " on " + Core.esc(i.git.branch) : i.git.detached ? " at " + Core.esc(i.git.detached) : "") : "";
     const where = !i.git ? ". It isn't in a Git repository." : i.git.root === i.path ? ", a Git repository" + on + "." : ", in a Git repository" + on + ".";
-    return { html: "Found <strong>" + Core.esc(i.name) + "</strong>" + where + (i.claudeMd ? " It has a CLAUDE.md, which Claude Code reads." : "") };
+    const guides = [i.claudeMd ? "a CLAUDE.md, which Claude Code reads" : "", i.agentsMd ? "an AGENTS.md, which agents on OpenRouter and other endpoints read" : ""].filter(Boolean);
+    return { html: "Found <strong>" + Core.esc(i.name) + "</strong>" + where + (guides.length ? " It has " + guides.join(", and ") + "." : "") };
   }
 
   function renderProject() {
@@ -2395,6 +2480,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
   }
 
   function sessionTitle(): string {
+    if (S.name) return S.name;
     const plan = planHandoff() || handedOff("chair");
     const title = plan ? Core.titleOf(plan.text) : "";
     return title || brief().feature.trim().split("\n")[0].slice(0, 120) || "Untitled session";
@@ -2455,8 +2541,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
       o = await api("GET", "sessions/" + encodeURIComponent(id));
     } catch (e: any) {
       saved.listError = "That session couldn't be opened. " + e.message;
-      els.sessions.open = true;
-      render();
+      showDrawer("history");
       return;
     }
     const rounds: Record<number, Handoffs> = {};
@@ -2478,6 +2563,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     resetSeats();
     resetConvos(true);
     S.sessionId = o.session.id;
+    S.name = o.session.title;
     saved.error = "";
     S.round = last;
     S.past = [];
@@ -2525,7 +2611,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     els.reviewOn.checked = !!b.review;
     els.questionsOn.checked = !!b.questions;
     setSessionHash(S.sessionId);
-    els.sessions.open = false;
+    closeDrawer(false);
     render();
     scrollToSection(finished ? els.secPlan : els.secProposals);
   }
@@ -2550,10 +2636,14 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
   }
 
   function renderSessions() {
-    toggle(els.sessions, canSave());
+    toggle(els.openHistory, canSave());
     if (!canSave()) return;
     const list = saved.list, running = S.phase === "running";
     const open = list.filter(x => x.status !== "done").length;
+    // History counts the unfinished sessions there are to come back to, besides the one open now.
+    const waiting = list.filter(x => x.status !== "done" && x.id !== S.sessionId).length;
+    toggle(els.historyBadge, waiting > 0);
+    setHTML(els.historyBadge, waiting ? waiting + '<span class="visually-hidden"> unfinished ' + (waiting === 1 ? "session" : "sessions") + "</span>" : "");
     setText(els.sessionsStatus, !saved.listed ? "" : !list.length ? "None yet" :
       list.length + (list.length === 1 ? " session" : " sessions") + (open ? ", " + open + " unfinished" : ""));
     setText(els.sessionsIntro, saved.listError ||
@@ -2606,7 +2696,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     const problem = checkAgents(agents, brief().project, true, !!brief().review);
     if (problem) {
       showReviseNote(problem.message);
-      if (problem.openProviders) els.providers.open = true;
+      revealProblem(problem);
       return;
     }
     showReviseNote("");
@@ -2864,6 +2954,7 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
 
   function openConvo(round: number, node: string, opener?: HTMLElement | null) {
     if (!S.seats[node]) return;
+    closeDrawer(false);
     convos.view = { round, node };
     convos.opener = opener || null;
     toggle(els.convo, true);
@@ -3162,23 +3253,127 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
 
   // The viewer holds focus while it's open, and Escape closes it.
   function onConvoKey(e: KeyboardEvent) {
+    holdFocus(e, els.convoPanel, els.convoTitle, closeConvo);
+  }
+
+  // A panel over the page holds focus while it's open, and Escape closes it.
+  function holdFocus(e: KeyboardEvent, panel: HTMLElement, title: HTMLElement, close: () => void) {
     if (e.key === "Escape") {
       e.preventDefault();
-      closeConvo();
+      close();
       return;
     }
     if (e.key !== "Tab") return;
-    const all: HTMLElement[] = Array.prototype.slice.call(els.convoPanel.querySelectorAll("button, select, summary, [tabindex]"))
+    const all: HTMLElement[] = Array.prototype.slice.call(panel.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]"))
       .filter((el: HTMLButtonElement) => el.tabIndex >= 0 && !el.disabled && !el.closest("[hidden]"));
     if (!all.length) return;
     const first = all[0], last = all[all.length - 1], at = document.activeElement;
-    if (e.shiftKey && (at === first || at === els.convoTitle)) {
+    if (e.shiftKey && (at === first || at === title)) {
       e.preventDefault();
       last.focus();
     } else if (!e.shiftKey && at === last) {
       e.preventDefault();
       first.focus();
     }
+  }
+
+  /* ---------- Tokens used ---------- */
+
+  function fmtTokens(n: number): string {
+    if (n < 1000) return String(n);
+    if (n < 1e6) return (n < 1e4 ? (n / 1e3).toFixed(1) : String(Math.round(n / 1e3))).replace(/\.0$/, "") + "k";
+    return (n / 1e6).toFixed(n < 1e7 ? 2 : 1).replace(/\.?0+$/, "") + "M";
+  }
+
+  // What the agents have used, by provider and model, as the rail shows it: every attempt at every step this page ran,
+  // in every round, and naming the session. A running step counts what its provider has reported so far.
+  function usageByAgent() {
+    // pending: a run that's still going hasn't said what it used yet.
+    type Row = { label: string, input: number, output: number, cost: number, counted: boolean, costed: boolean, pending: boolean };
+    const rows: Record<string, Row> = {};
+    const runs: { agent: Agent, served: string, usage: Usage | null, status: string }[] = [];
+    Object.keys(convos.mem).forEach(k => convos.mem[k].forEach(t => runs.push(t)));
+    if (nameUsage) runs.push(nameUsage);
+    runs.forEach(t => {
+      if (!t.agent || !PROVIDERS[t.agent.provider]) return;
+      const model = t.served || t.agent.model, key = t.agent.provider + "\u0000" + model;
+      const r = rows[key] || (rows[key] = {
+        label: Core.agentLabel({ provider: t.agent.provider, model }, { customUrl: creds.urls.custom }),
+        input: 0, output: 0, cost: 0, counted: false, costed: false, pending: false,
+      });
+      const u = t.usage;
+      if (!u) {
+        if (t.status === "running") r.pending = true;
+        return;
+      }
+      if (typeof u.inputTokens === "number" || typeof u.outputTokens === "number") {
+        r.input += u.inputTokens || 0;
+        r.output += u.outputTokens || 0;
+        r.counted = true;
+      }
+      if (typeof u.costUsd === "number") {
+        r.cost += u.costUsd;
+        r.costed = true;
+      }
+    });
+    return Object.keys(rows).map(k => rows[k]);
+  }
+
+  function renderUsage() {
+    const rows = S.phase === "idle" ? [] : usageByAgent();
+    toggle(els.railUsage, rows.length > 0);
+    if (!rows.length) return;
+    const money = (n: number) => "$" + n.toFixed(n < 1 ? 4 : 2);
+    const line = (who: string, r: { input: number, output: number, cost: number, counted: boolean, costed: boolean, pending: boolean }, total?: boolean) =>
+      '<li class="rail-usage-row' + (total ? " is-total" : "") + '"><span class="rail-usage-who">' + Core.esc(who) + '</span> <span class="rail-usage-n">' +
+      (r.counted ? fmtTokens(r.input) + " in \u00B7 " + fmtTokens(r.output) + " out" : r.pending ? "Counting\u2026" : "Not reported") +
+      (r.costed ? " \u00B7 " + money(r.cost) : "") + "</span></li>";
+    const counted = rows.filter(r => r.counted);
+    const sum = {
+      input: counted.reduce((n, r) => n + r.input, 0), output: counted.reduce((n, r) => n + r.output, 0),
+      cost: rows.reduce((n, r) => n + r.cost, 0), counted: counted.length > 0, costed: rows.some(r => r.costed), pending: rows.some(r => r.pending),
+    };
+    setHTML(els.railUsageList, rows.map(r => line(r.label, r)).join("") + (rows.length > 1 ? line("Total", sum, true) : ""));
+  }
+
+  /* ---------- Settings and History ---------- */
+
+  // The agents and providers, and the saved sessions, open from the foot of the rail in drawers, one at a time.
+  const DRAWERS = {
+    settings: { el: els.settingsDrawer, title: els.settingsTitle, button: els.openSettings },
+    history: { el: els.historyDrawer, title: els.historyTitle, button: els.openHistory },
+  };
+  type DrawerName = keyof typeof DRAWERS;
+  let drawer: { name: DrawerName, opener: HTMLElement | null } | null = null;
+
+  function showDrawer(name: DrawerName, opener?: HTMLElement | null) {
+    if (drawer && drawer.name === name) return;
+    closeDrawer(false);
+    closeConvo();
+    const d = DRAWERS[name];
+    drawer = { name, opener: opener || d.button };
+    toggle(d.el, true);
+    d.button.setAttribute("aria-expanded", "true");
+    document.documentElement.classList.add("is-drawer-open");
+    if (name === "history" && canSave()) refreshSessions();
+    render();
+    focusQuietly(d.title);
+  }
+
+  // restore: give focus back to what opened the drawer.
+  function closeDrawer(restore = true) {
+    if (!drawer) return;
+    const d = DRAWERS[drawer.name], back = drawer.opener;
+    drawer = null;
+    toggle(d.el, false);
+    d.button.setAttribute("aria-expanded", "false");
+    document.documentElement.classList.remove("is-drawer-open");
+    if (restore && back && back.isConnected && !back.hidden) focusQuietly(back);
+  }
+
+  function agentsSummary(): string {
+    const agents = currentAgents(), opts = { customUrl: creds.urls.custom };
+    return Core.agentsSentence(agents, opts) + (reviewing() ? " The final review on " + Core.agentLabel(agents.review, opts) + "." : "");
   }
 
   /* ---------- Events ---------- */
@@ -3445,6 +3640,15 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
   els.convoClose.addEventListener("click", closeConvo);
   els.convoScrim.addEventListener("click", closeConvo);
   els.convo.addEventListener("keydown", onConvoKey);
+  els.openSettings.addEventListener("click", () => (drawer && drawer.name === "settings" ? closeDrawer() : showDrawer("settings", els.openSettings)));
+  els.openHistory.addEventListener("click", () => (drawer && drawer.name === "history" ? closeDrawer() : showDrawer("history", els.openHistory)));
+  els.changeAgents.addEventListener("click", () => showDrawer("settings", els.changeAgents));
+  (Object.keys(DRAWERS) as DrawerName[]).forEach(name => {
+    const d = DRAWERS[name];
+    d.el.addEventListener("keydown", e => holdFocus(e, d.el.querySelector(".drawer-panel") as HTMLElement, d.title, () => closeDrawer()));
+    d.el.addEventListener("click", e => { if ((e.target as Element).closest("[data-close]")) closeDrawer(); });
+    d.button.setAttribute("aria-expanded", "false");
+  });
   els.convoStep.addEventListener("change", () => {
     const m = /^(\d+):(.+)$/.exec(els.convoStep.value);
     if (!m || !convos.view) return;
@@ -3522,11 +3726,10 @@ type Thrown = { code?: unknown, message?: unknown, text?: unknown } | null | und
     }
     render();
     if (!canSave()) return;
-    // A session named in the address opens again; otherwise unfinished sessions are offered.
+    // A session named in the address opens again. History counts any unfinished ones.
     const m = /^#session=([\w-]+)$/.exec(location.hash);
     refreshSessions().then(() => {
       if (m) openSession(m[1]);
-      else if (S.phase === "idle" && saved.list.some(x => x.status !== "done")) els.sessions.open = true;
       render();
     });
   });
